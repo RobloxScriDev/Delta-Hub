@@ -1800,19 +1800,19 @@ end)()
 -- THEME
 -- ============================================================
 local THEME = {
-	bg         = Color3.fromRGB(18, 18, 24),
-	sidebar    = Color3.fromRGB(14, 14, 19),
-	content    = Color3.fromRGB(22, 22, 29),
-	header     = Color3.fromRGB(26, 26, 34),
-	card       = Color3.fromRGB(32, 32, 41),
-	cardHover  = Color3.fromRGB(40, 40, 52),
-	accent     = Color3.fromRGB(124, 92, 255),
-	accentAlt  = Color3.fromRGB(255, 140, 60),
-	text       = Color3.fromRGB(235, 235, 242),
-	textDim    = Color3.fromRGB(145, 145, 165),
-	stroke     = Color3.fromRGB(46, 46, 60),
-	danger     = Color3.fromRGB(255, 80, 96),
-	success    = Color3.fromRGB(60, 200, 120),
+	bg         = Color3.fromRGB(8, 14, 27),
+	sidebar    = Color3.fromRGB(11, 20, 37),
+	content    = Color3.fromRGB(14, 25, 45),
+	header     = Color3.fromRGB(10, 18, 33),
+	card       = Color3.fromRGB(22, 36, 60),
+	cardHover  = Color3.fromRGB(30, 51, 81),
+	accent     = Color3.fromRGB(74, 190, 255),
+	accentAlt  = Color3.fromRGB(151, 112, 255),
+	text       = Color3.fromRGB(239, 246, 255),
+	textDim    = Color3.fromRGB(147, 168, 199),
+	stroke     = Color3.fromRGB(43, 68, 104),
+	danger     = Color3.fromRGB(245, 91, 112),
+	success    = Color3.fromRGB(67, 219, 157),
 }
 
 local gui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
@@ -1823,48 +1823,67 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 2147483647
 
 local mainFrame = Instance.new("Frame", gui)
-mainFrame.Size = UDim2.new(0, 460, 0, 460)
-mainFrame.Position = UDim2.new(0.5, -230, 0.5, -230)
+mainFrame.Size = UDim2.new(0, 720, 0, 520)
+mainFrame.Position = UDim2.new(0.5, -360, 0.5, -260)
 mainFrame.BackgroundColor3 = THEME.bg
 mainFrame.BorderSizePixel = 0
 mainFrame.ClipsDescendants = true
 mainFrame.ZIndex = 100
-Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
-Instance.new("UIStroke", mainFrame).Color = THEME.stroke
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 16)
+local mainStroke = Instance.new("UIStroke", mainFrame)
+mainStroke.Color = THEME.stroke; mainStroke.Thickness = 1
 
 local header = Instance.new("Frame", mainFrame)
-header.Size = UDim2.new(1, 0, 0, 40)
+header.Size = UDim2.new(1, 0, 0, 76)
 header.BackgroundColor3 = THEME.header
 header.BorderSizePixel = 0
 header.ZIndex = 101
-Instance.new("UICorner", header).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
 local hFix = Instance.new("Frame", header)
-hFix.Size = UDim2.new(1, 0, 0, 10)
-hFix.Position = UDim2.new(0, 0, 1, -10)
+hFix.Size = UDim2.new(1, 0, 0, 16)
+hFix.Position = UDim2.new(0, 0, 1, -16)
 hFix.BackgroundColor3 = THEME.header
 hFix.BorderSizePixel = 0
 
+local logo = Instance.new("Frame", header)
+logo.Size = UDim2.new(0, 40, 0, 40); logo.Position = UDim2.new(0, 18, 0, 18)
+logo.BackgroundColor3 = THEME.accent; logo.BorderSizePixel = 0
+Instance.new("UICorner", logo).CornerRadius = UDim.new(0, 11)
+local logoText = Instance.new("TextLabel", logo)
+logoText.Size = UDim2.new(1, 0, 1, 0); logoText.BackgroundTransparency = 1
+logoText.Text = "Δ"; logoText.TextColor3 = THEME.bg; logoText.Font = Enum.Font.GothamBlack; logoText.TextSize = 25
+
 local titleLbl = Instance.new("TextLabel", header)
-titleLbl.Size = UDim2.new(1, -100, 1, 0)
-titleLbl.Position = UDim2.new(0, 16, 0, 0)
+titleLbl.Size = UDim2.new(1, -160, 0, 24)
+titleLbl.Position = UDim2.new(0, 70, 0, 15)
 titleLbl.BackgroundTransparency = 1
 titleLbl.Text = "RobloxScriDev Delta HUB"
 titleLbl.TextColor3 = THEME.text
 titleLbl.Font = Enum.Font.GothamBold
-titleLbl.TextSize = 15
+titleLbl.TextSize = 18
 titleLbl.TextXAlignment = Enum.TextXAlignment.Left
 
+local subtitleLbl = Instance.new("TextLabel", header)
+subtitleLbl.Size = UDim2.new(1, -160, 0, 18); subtitleLbl.Position = UDim2.new(0, 71, 0, 40)
+subtitleLbl.BackgroundTransparency = 1; subtitleLbl.Text = "OPERATIONS CONSOLE  •  DELTA BUILD"
+subtitleLbl.TextColor3 = THEME.textDim; subtitleLbl.Font = Enum.Font.GothamMedium
+subtitleLbl.TextSize = 10; subtitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local headerLine = Instance.new("Frame", header)
+headerLine.Size = UDim2.new(1, -36, 0, 1); headerLine.Position = UDim2.new(0, 18, 1, -1)
+headerLine.BackgroundColor3 = THEME.stroke; headerLine.BorderSizePixel = 0
+
 local closeBtn = Instance.new("TextButton", header)
-closeBtn.Size = UDim2.new(0, 24, 0, 24)
-closeBtn.Position = UDim2.new(1, -34, 0.5, -12)
+closeBtn.Size = UDim2.new(0, 32, 0, 32)
+closeBtn.Position = UDim2.new(1, -50, 0.5, -16)
 closeBtn.BackgroundColor3 = THEME.danger
-closeBtn.Text = "X"
+closeBtn.Text = "×"
 closeBtn.TextColor3 = Color3.new(1,1,1)
 closeBtn.Font = Enum.Font.GothamBold
-closeBtn.TextSize = 14
+closeBtn.TextSize = 20
 closeBtn.BorderSizePixel = 0
 closeBtn.AutoButtonColor = false
-Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 9)
 
 local function setMenuVisible(on)
 	if on and not menuOpen then
@@ -1901,20 +1920,34 @@ UserInputService.InputChanged:Connect(function(input)
 end)
 
 local sidebar = Instance.new("Frame", mainFrame)
-sidebar.Size = UDim2.new(0, 132, 1, -40)
-sidebar.Position = UDim2.new(0, 0, 0, 40)
+sidebar.Size = UDim2.new(0, 174, 1, -76)
+sidebar.Position = UDim2.new(0, 0, 0, 76)
 sidebar.BackgroundColor3 = THEME.sidebar
 sidebar.BorderSizePixel = 0
 local sLayout = Instance.new("UIListLayout", sidebar)
-sLayout.Padding = UDim.new(0, 4); sLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sLayout.Padding = UDim.new(0, 6); sLayout.SortOrder = Enum.SortOrder.LayoutOrder
 local sPad = Instance.new("UIPadding", sidebar)
-sPad.PaddingTop = UDim.new(0, 10); sPad.PaddingLeft = UDim.new(0, 8); sPad.PaddingRight = UDim.new(0, 8)
+sPad.PaddingTop = UDim.new(0, 16); sPad.PaddingLeft = UDim.new(0, 12); sPad.PaddingRight = UDim.new(0, 12)
 
 local content = Instance.new("Frame", mainFrame)
-content.Size = UDim2.new(1, -132, 1, -40)
-content.Position = UDim2.new(0, 132, 0, 40)
+content.Size = UDim2.new(1, -174, 1, -76)
+content.Position = UDim2.new(0, 174, 0, 76)
 content.BackgroundColor3 = THEME.content
 content.BorderSizePixel = 0
+
+local contentTitle = Instance.new("TextLabel", content)
+contentTitle.Size = UDim2.new(1, -34, 0, 25); contentTitle.Position = UDim2.new(0, 18, 0, 14)
+contentTitle.BackgroundTransparency = 1; contentTitle.Text = "CONTROL CENTER"
+contentTitle.TextColor3 = THEME.text; contentTitle.Font = Enum.Font.GothamBold
+contentTitle.TextSize = 16; contentTitle.TextXAlignment = Enum.TextXAlignment.Left
+local contentMeta = Instance.new("TextLabel", content)
+contentMeta.Size = UDim2.new(1, -34, 0, 16); contentMeta.Position = UDim2.new(0, 18, 0, 38)
+contentMeta.BackgroundTransparency = 1; contentMeta.Text = "MODULE SETTINGS"
+contentMeta.TextColor3 = THEME.accent; contentMeta.Font = Enum.Font.GothamBold
+contentMeta.TextSize = 9; contentMeta.TextXAlignment = Enum.TextXAlignment.Left
+local contentLine = Instance.new("Frame", content)
+contentLine.Size = UDim2.new(1, -36, 0, 1); contentLine.Position = UDim2.new(0, 18, 0, 60)
+contentLine.BackgroundColor3 = THEME.stroke; contentLine.BorderSizePixel = 0
 
 local tabs, tabButtons = {}, {}
 local activeTab = nil
@@ -1936,12 +1969,14 @@ local function setTab(name)
 		end
 	end
 	activeTab = name
+	contentTitle.Text = string.upper(name)
+	contentMeta.Text = "MODULE SETTINGS  /  " .. string.upper(name)
 end
 
 local function createTab(name)
 	local scroll = Instance.new("ScrollingFrame", content)
-	scroll.Size = UDim2.new(1, -18, 1, -18)
-	scroll.Position = UDim2.new(0, 9, 0, 9)
+	scroll.Size = UDim2.new(1, -30, 1, -78)
+	scroll.Position = UDim2.new(0, 15, 0, 68)
 	scroll.BackgroundTransparency = 1; scroll.BorderSizePixel = 0
 	scroll.ScrollBarThickness = 3; scroll.ScrollBarImageColor3 = THEME.accent
 	scroll.CanvasSize = UDim2.new(0, 0, 0, 0); scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -1955,19 +1990,19 @@ local function createTab(name)
 	tabs[name] = scroll
 
 	local btn = Instance.new("TextButton", sidebar)
-	btn.Size = UDim2.new(1, 0, 0, 32)
+	btn.Size = UDim2.new(1, 0, 0, 38)
 	btn.BackgroundColor3 = THEME.card; btn.BackgroundTransparency = 1
 	btn.Text = ""; btn.BorderSizePixel = 0; btn.AutoButtonColor = false
-	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
 	local indicator = Instance.new("Frame", btn)
-	indicator.Size = UDim2.new(0, 3, 0, 16); indicator.Position = UDim2.new(0, 0, 0.5, -8)
+	indicator.Size = UDim2.new(0, 4, 0, 22); indicator.Position = UDim2.new(0, 0, 0.5, -11)
 	indicator.BackgroundColor3 = THEME.accent; indicator.BorderSizePixel = 0
 	indicator.Visible = false
 	Instance.new("UICorner", indicator).CornerRadius = UDim.new(1, 0)
 
 	local lbl = Instance.new("TextLabel", btn)
-	lbl.Size = UDim2.new(1, -14, 1, 0); lbl.Position = UDim2.new(0, 14, 0, 0)
+	lbl.Size = UDim2.new(1, -20, 1, 0); lbl.Position = UDim2.new(0, 16, 0, 0)
 	lbl.BackgroundTransparency = 1; lbl.Text = name
 	lbl.TextColor3 = THEME.textDim; lbl.Font = Enum.Font.GothamMedium
 	lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left
