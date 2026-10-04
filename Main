@@ -8,6 +8,12 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer
 local Camera      = workspace.CurrentCamera
 local Workspace   = workspace
+local Shared      = (getgenv and getgenv()) or _G
+
+if Shared.DeltaHubCleanup then pcall(Shared.DeltaHubCleanup) end
+Shared.DeltaHubCleanup = nil
+
+local Inventory
 
 for _, name in ipairs({"CleanCheats", "InventoryHUD", "PlayerList"}) do
 	local old = LocalPlayer:WaitForChild("PlayerGui"):FindFirstChild(name)
@@ -70,6 +76,7 @@ local isHolding        = false
 local isHoldingInv     = false
 local menuOpen         = true
 local pendingKeybind   = nil
+local hubDestroyed     = false
 local savedMouseBehavior = UserInputService.MouseBehavior
 local savedMouseIconEnabled = UserInputService.MouseIconEnabled
 
@@ -206,7 +213,7 @@ local ESP = (function()
 		tracerDrawings[plr] = line
 	end
 
-	local function updateESPForTarget(char, ds, isNPCModel)
+	local function updateESPForTarget(plr, char, ds, isNPCModel)
 		local head = char:FindFirstChild("Head")
 		local root = char:FindFirstChild("HumanoidRootPart")
 		local hum  = char:FindFirstChild("Humanoid")
@@ -233,7 +240,8 @@ local ESP = (function()
 		local dist = myRoot and math.floor((myRoot.Position - root.Position).Magnitude * 0.28) or 0
 		ds.nameTag.Position = Vector2.new(topV.X, pos.Y - 16)
 		ds.nameTag.Visible = true
-		ds.nameTag.Text = char.Name .. " [" .. math.floor(hum.Health) .. "HP]"
+		local lootValue = Inventory and Inventory.getTotalValue and Inventory.getTotalValue(plr) or 0
+		ds.nameTag.Text = string.format("%s | $%d | %d HP", plr.Name, math.floor(lootValue), math.floor(hum.Health))
 		ds.distTag.Position = Vector2.new(topV.X, pos.Y - 30)
 		ds.distTag.Visible = true
 		ds.distTag.Text = dist .. "m"
@@ -328,7 +336,7 @@ local ESP = (function()
 		refreshPlayersPeriodically()
 		for plr, ds in pairs(drawings) do
 			local char = plr.Character
-			if char then updateESPForTarget(char, ds, false)
+			if char then updateESPForTarget(plr, char, ds, false)
 			else
 				ds.box.Visible = false; ds.nameTag.Visible = false
 				ds.distTag.Visible = false; ds.healthBar.Visible = false
@@ -1131,6 +1139,10 @@ local Aimbot = (function()
 		if heartbeat then heartbeat:Disconnect(); heartbeat = nil end
 		fovCircle.Visible = false
 	end
+	function self.destroy()
+		self.stop()
+		fovCircle:Remove()
+	end
 
 	function self.setEnabled(on)
 		S.aimEnabled = on
@@ -1319,7 +1331,7 @@ end)()
 -- ============================================================
 -- INVENTORY
 -- ============================================================
-local Inventory = (function()
+Inventory = (function()
 	local self = {}
 	local pinnedPlayer = nil
 	local CFG = {
@@ -1886,6 +1898,7 @@ closeBtn.AutoButtonColor = false
 Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 9)
 
 local function setMenuVisible(on)
+	if hubDestroyed then return end
 	if on and not menuOpen then
 		savedMouseBehavior = UserInputService.MouseBehavior
 		savedMouseIconEnabled = UserInputService.MouseIconEnabled
@@ -2483,6 +2496,23 @@ end
 
 -- CONFIGS
 local HttpService = game:GetService("HttpService")
+local UIControls = {}
+
+local function syncToggleControls()
+	for setting, control in pairs(UIControls) do
+		if control and control.Set then control:Set(S[setting], false) end
+	end
+end
+
+local function showConfigStatus(text)
+	pcall(function()
+		game:GetService("StarterGui"):SetCore("SendNotification", {
+			Title = "RobloxScriDev Delta HUB",
+			Text = text,
+			Duration = 4,
+		})
+	end)
+end
 
 local Configs = (function()
 	local self = {}
@@ -2603,6 +2633,12 @@ local Configs = (function()
 		GroundESP.setAlerts(S.highValueAlerts)
 		GroundESP.setAlertMin(S.highValueAlertMin)
 		PlayerList.setEnabled(S.playerList)
+		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
+		Footsteps.setEnabled(S.footsteps)
+		World.setFullbright(S.fullbright); World.setNoFog(S.noFog)
+		VM.setVMEnabled(S.vmEnabled); VM.setWpnEnabled(S.wpnEnabled)
+		Inventory.setEnabled(S.invEnabled)
+		syncToggleControls()
 	end
 
 	function self.save(slot)
@@ -2616,6 +2652,7 @@ local Configs = (function()
 		end
 		SaveFile("AutoLoadConfig", name)
 		print("[Config] SAVE slot" .. slot .. (ok and " (file)" or ""))
+		showConfigStatus("Settings saved to Slot " .. slot)
 		return true
 	end
 
@@ -2634,10 +2671,15 @@ local Configs = (function()
 				if ok and type(result) == "table" then data = result end
 			end
 		end
-		if not data then warn("[Config] slot" .. slot .. " empty"); return false end
+		if not data then
+			warn("[Config] slot" .. slot .. " empty")
+			showConfigStatus("Slot " .. slot .. " is empty")
+			return false
+		end
 		self.apply(data)
 		SaveFile("AutoLoadConfig", name)
 		print("[Config] LOAD slot" .. slot)
+		showConfigStatus("Settings loaded from Slot " .. slot)
 		return true
 	end
 
@@ -2666,6 +2708,7 @@ local Configs = (function()
 		if data then
 			self.apply(data)
 			print("[Config] AutoLoad: " .. lastAuto)
+			showConfigStatus("Auto-loaded " .. lastAuto)
 		end
 	end
 
@@ -2699,6 +2742,7 @@ end)
 addSection("Players by Distance")
 
 local function refreshFreeCamPlayers()
+	if hubDestroyed then return end
 	for _, child in ipairs(freeCamTab:GetChildren()) do
 		if child:GetAttribute("FreeCamRow") then child:Destroy() end
 	end
@@ -2741,6 +2785,7 @@ end
 
 local freeCamRefreshElapsed = 0
 RunService.Heartbeat:Connect(function(dt)
+	if hubDestroyed then return end
 	freeCamRefreshElapsed = freeCamRefreshElapsed + dt
 	if freeCamRefreshElapsed >= 0.5 then
 		freeCamRefreshElapsed = 0
@@ -2756,16 +2801,16 @@ createTab("Combat")
 setTab("Combat")
 
 addSection("Aimbot")
-addToggle("Enable Aimbot", S.aimEnabled, function(on) Aimbot.setEnabled(on) end)
+UIControls.aimEnabled = addToggle("Enable Aimbot", S.aimEnabled, function(on) Aimbot.setEnabled(on) end)
 
 addModeSwitch("Aim Mode", {
 	{label="Lock", value="Lock", color=THEME.accent},
 	{label="Silent", value="Silent", color=THEME.accentAlt},
 }, function() return S.aimMode end, function(v) Aimbot.setMode(v) end)
 
-addToggle("Perfect Silent (no weapon move)", S.perfectSilent, function(on) S.perfectSilent = on end)
+UIControls.perfectSilent = addToggle("Perfect Silent (no weapon move)", S.perfectSilent, function(on) S.perfectSilent = on end)
 addSlider("Hit Chance (Silent)", 0, 100, S.silentHitChance, 0, function(v) S.silentHitChance = v end)
-addToggle("Visible Only", S.aimVisibleOnly, function(on) S.aimVisibleOnly = on end)
+UIControls.aimVisibleOnly = addToggle("Visible Only", S.aimVisibleOnly, function(on) S.aimVisibleOnly = on end)
 
 addSection("Activation")
 addKeyBind("Activation Key", function() return H.holdKeyName() end, function(k) S.holdKey = k end)
@@ -2802,49 +2847,49 @@ createTab("Visuals")
 setTab("Visuals")
 
 addSection("Player Boxes")
-addToggle("Enable", S.espBox, function(on) ESP.setBox(on) end)
+UIControls.espBox = addToggle("Enable", S.espBox, function(on) ESP.setBox(on) end)
 addColorButton("Color", function() return C.ESP end, function(c) C.ESP = c end)
 
 addSection("Player Skeleton")
-addToggle("Enable", S.espSkeleton, function(on) ESP.setSkeleton(on) end)
+UIControls.espSkeleton = addToggle("Enable", S.espSkeleton, function(on) ESP.setSkeleton(on) end)
 addColorButton("Color", function() return C.SKELETON end, function(c) C.SKELETON = c end)
 
 addSection("Player Tracers")
-addToggle("Enable", S.espTracer, function(on) ESP.setTracer(on) end)
+UIControls.espTracer = addToggle("Enable", S.espTracer, function(on) ESP.setTracer(on) end)
 addColorButton("Color", function() return C.TRACER end, function(c) C.TRACER = c end)
 
 addSection("Player Glow")
-addToggle("Enable", S.playerGlow, function(on) Glow.setPlayerGlow(on) end)
+UIControls.playerGlow = addToggle("Enable", S.playerGlow, function(on) Glow.setPlayerGlow(on) end)
 addColorButton("Color", function() return C.GLOW end, function(c) C.GLOW = c; Glow.setColor(c) end)
 addSlider("Transparency", 0, 1, S.glowTransparency, 2, function(v) Glow.setTransparency(v) end)
 
 addSection("Footsteps")
-addToggle("Enable", S.footsteps, function(on) Footsteps.setEnabled(on) end)
+UIControls.footsteps = addToggle("Enable", S.footsteps, function(on) Footsteps.setEnabled(on) end)
 addColorButton("Color", function() return C.FOOTSTEP end, function(c) C.FOOTSTEP = c end)
 addSlider("Size", 2, 10, S.footstepSize, 0, function(v) Footsteps.setSize(v) end)
 
 addSection("NPC Boxes")
-addToggle("Enable", S.npcEspBox, function(on) NPCEsp.setBox(on) end)
+UIControls.npcEspBox = addToggle("Enable", S.npcEspBox, function(on) NPCEsp.setBox(on) end)
 addColorButton("Color", function() return C.NPC_ESP end, function(c) C.NPC_ESP = c end)
 
 addSection("NPC Skeleton")
-addToggle("Enable", S.npcEspSkeleton, function(on) NPCEsp.setSkeleton(on) end)
+UIControls.npcEspSkeleton = addToggle("Enable", S.npcEspSkeleton, function(on) NPCEsp.setSkeleton(on) end)
 addColorButton("Color", function() return C.NPC_SKELETON end, function(c) C.NPC_SKELETON = c end)
 
 addSection("NPC Tracers")
-addToggle("Enable", S.npcEspTracer, function(on) NPCEsp.setTracer(on) end)
+UIControls.npcEspTracer = addToggle("Enable", S.npcEspTracer, function(on) NPCEsp.setTracer(on) end)
 addColorButton("Color", function() return C.NPC_TRACER end, function(c) C.NPC_TRACER = c end)
 
 addSection("NPC Glow")
-addToggle("Enable", S.npcGlow, function(on) Glow.setNpcGlow(on) end)
+UIControls.npcGlow = addToggle("Enable", S.npcGlow, function(on) Glow.setNpcGlow(on) end)
 
 addSection("Inventory Viewer")
-addToggle("Enable", S.invEnabled, function(on) Inventory.setEnabled(on) end)
-addToggle("Show Name", S.invShowName, function(on) Inventory.setShowName(on) end)
-addToggle("Show Value", S.invShowValue, function(on) Inventory.setShowValue(on) end)
-addToggle("Show Attachments", S.invShowAttach, function(on) Inventory.setShowAttach(on) end)
-addToggle("Full Inventory", S.invShowFull, function(on) Inventory.setShowFull(on) end)
-addToggle("Show Corpses", S.invIncludeCorpse, function(on) Inventory.setIncludeCorpse(on) end)
+UIControls.invEnabled = addToggle("Enable", S.invEnabled, function(on) Inventory.setEnabled(on) end)
+UIControls.invShowName = addToggle("Show Name", S.invShowName, function(on) Inventory.setShowName(on) end)
+UIControls.invShowValue = addToggle("Show Value", S.invShowValue, function(on) Inventory.setShowValue(on) end)
+UIControls.invShowAttach = addToggle("Show Attachments", S.invShowAttach, function(on) Inventory.setShowAttach(on) end)
+UIControls.invShowFull = addToggle("Full Inventory", S.invShowFull, function(on) Inventory.setShowFull(on) end)
+UIControls.invIncludeCorpse = addToggle("Show Corpses", S.invIncludeCorpse, function(on) Inventory.setIncludeCorpse(on) end)
 addSlider("Max Angle (°)", 5, 90, S.invMaxAngleDeg, 0, function(v) Inventory.setMaxAngle(v) end)
 addSlider("Max Distance", 50, 2000, S.invMaxDistance, 0, function(v) Inventory.setMaxDistance(v) end)
 addKeyBind("Viewer Key", function() return S.invKey.Name end, function(k)
@@ -2852,15 +2897,15 @@ addKeyBind("Viewer Key", function() return S.invKey.Name end, function(k)
 end)
 
 addSection("Ground Items ESP")
-addToggle("Enable", S.groundItemEsp, function(on) GroundESP.setGroundItems(on) end)
+UIControls.groundItemEsp = addToggle("Enable", S.groundItemEsp, function(on) GroundESP.setGroundItems(on) end)
 addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP.setMinValue(v) end)
 addSlider("Max Distance", 50, 3000, S.groundMaxDistance, 0, function(v) GroundESP.setMaxDistance(v) end)
 
 addSection("Corpses ESP")
-addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
+UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
 
 addSection("High-Value Alerts")
-addToggle("Enable", S.highValueAlerts, function(on) GroundESP.setAlerts(on) end)
+UIControls.highValueAlerts = addToggle("Enable", S.highValueAlerts, function(on) GroundESP.setAlerts(on) end)
 addSlider("Alert Value", 0, 100000, S.highValueAlertMin, 0, function(v) GroundESP.setAlertMin(v) end)
 
 -- ============================================================
@@ -2870,7 +2915,7 @@ createTab("Player")
 setTab("Player")
 
 addSection("Hands (ViewModel)")
-addToggle("Enable", S.vmEnabled, function(on) VM.setVMEnabled(on) end)
+UIControls.vmEnabled = addToggle("Enable", S.vmEnabled, function(on) VM.setVMEnabled(on) end)
 addSlider("Hands Transparency", 0, 1, S.vmTransparency, 2, function(v) VM.setVMTransparency(v) end)
 
 addSection("Hands Offset")
@@ -2885,7 +2930,7 @@ addColorButton("Color", function() return C.VM_COLOR end, function(c)
 end)
 
 addSection("Weapon in Hands")
-addToggle("Enable", S.wpnEnabled, function(on) VM.setWpnEnabled(on) end)
+UIControls.wpnEnabled = addToggle("Enable", S.wpnEnabled, function(on) VM.setWpnEnabled(on) end)
 addSlider("Weapon Transparency", 0, 1, S.wpnTransparency, 2, function(v) VM.setWpnTransparency(v) end)
 addColorButton("Weapon Color", function() return C.WPN_COLOR end, function(c)
 	C.WPN_COLOR = c
@@ -2899,11 +2944,11 @@ createTab("World")
 setTab("World")
 
 addSection("Lighting")
-addToggle("Fullbright", S.fullbright, function(on) World.setFullbright(on) end)
-addToggle("No Fog", S.noFog, function(on) World.setNoFog(on) end)
+UIControls.fullbright = addToggle("Fullbright", S.fullbright, function(on) World.setFullbright(on) end)
+UIControls.noFog = addToggle("No Fog", S.noFog, function(on) World.setNoFog(on) end)
 
 addSection("Overlay")
-addToggle("Player List", S.playerList, function(on) PlayerList.setEnabled(on) end)
+UIControls.playerList = addToggle("Player List", S.playerList, function(on) PlayerList.setEnabled(on) end)
 addButton("Stop Spectating", THEME.card, function() AdminTools.stopSpectating() end)
 
 -- ============================================================
@@ -2963,10 +3008,41 @@ for i = 1, 3 do
 	loadBtn.MouseButton1Click:Connect(function() Configs.load(idx) end)
 end
 
+local function destroyHub()
+	if hubDestroyed then return end
+	hubDestroyed = true
+	isHolding = false; isHoldingInv = false
+	Aimbot.destroy()
+	ESP.stopESP(); ESP.stopSkeleton(); ESP.stopTracer()
+	NPCEsp.stopESP(); NPCEsp.stopSkeleton(); NPCEsp.stopTracer()
+	Glow.setPlayerGlow(false); Glow.setNpcGlow(false)
+	Footsteps.setEnabled(false)
+	GroundESP.setGroundItems(false); GroundESP.setCorpses(false); GroundESP.setAlerts(false)
+	PlayerList.setEnabled(false)
+	AdminTools.stopSpectating()
+	World.setFullbright(false); World.setNoFog(false)
+	VM.setVMEnabled(false); VM.setWpnEnabled(false)
+	Inventory.setEnabled(false); Inventory.setPinnedPlayer(nil)
+	RunService:UnbindFromRenderStep("FOVLock")
+	RunService:UnbindFromRenderStep("CheatViewModel")
+	local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+	if playerGui then
+		for _, name in ipairs({"InventoryHUD", "PlayerList"}) do
+			local existing = playerGui:FindFirstChild(name)
+			if existing then existing:Destroy() end
+		end
+	end
+	Shared.DeltaHubCleanup = nil
+	gui:Destroy()
+end
+
+Shared.DeltaHubCleanup = destroyHub
+
 addSection("Hub")
 addKeyBind("Dismiss Key", function() return S.dismissKey.Name end, function(k)
 	if k.type == "key" then S.dismissKey = k.code end
 end)
+addButton("Unload Hub", THEME.danger, destroyHub)
 
 addSection("Reset")
 addButton("Reset Settings", THEME.danger, function()
@@ -3001,6 +3077,8 @@ addButton("Reset Settings", THEME.danger, function()
 	World.setFullbright(false); World.setNoFog(false)
 	VM.setVMEnabled(false); VM.setWpnEnabled(false)
 	Inventory.setEnabled(false)
+	syncToggleControls()
+	showConfigStatus("Settings reset to defaults")
 	print("[Config] Reset")
 end)
 
@@ -3008,6 +3086,7 @@ end)
 -- INPUT
 -- ============================================================
 UserInputService.InputBegan:Connect(function(input, gp)
+	if hubDestroyed then return end
 	if pendingKeybind then
 		local ok = pendingKeybind(input)
 		if ok then
@@ -3033,6 +3112,7 @@ UserInputService.InputBegan:Connect(function(input, gp)
 end)
 
 UserInputService.InputEnded:Connect(function(input, gp)
+	if hubDestroyed then return end
 	if S.aimActivationMode == "Hold" and H.matchesHold(input) then
 		isHolding = false
 	end
