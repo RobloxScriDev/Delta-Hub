@@ -43,7 +43,7 @@ local S = {
 	aimEnabled=false, aimMode="Lock", aimPart="Head", aimFov=90,
 	aimSmoothing=0.3, aimPrediction=0, aimVisibleOnly=false,
 	aimNPCs=false,
-	weaponPrediction=true, weaponAntiRecoil=false, weaponRecoilStrength=1,
+	weaponPrediction=false, weaponAntiRecoil=false, weaponRecoilStrength=1, weaponDropScale=0.05,
 	holdKey={type="key", code=Enum.KeyCode.F}, aimActivationMode="Toggle",
 	perfectSilent=false, silentHitChance=100,
 
@@ -59,7 +59,8 @@ local S = {
 	groundItemEsp=false, corpseEsp=false, containerContentsEsp=false, groundMinValue=0,
 	highValueAlerts=false, highValueAlertMin=10000,
 	objectEsp=false, objectAmmo=false, objectWeapons=false, objectMisc=false, objectTools=false,
-	objectEspUnlimited=true,
+	objectMedical=false, objectArmor=false, objectFood=false, objectKeys=false, objectAttachments=false,
+	objectEspDistance=500,
 
 	freeCam=false, freeCamSpeed=50,
 	autoLoadDefault=false,
@@ -1218,7 +1219,7 @@ local Aimbot = (function()
 				local velocity = S.weaponPrediction and WeaponAssist.getVelocity() or 1000
 				local travelTime = (p - camPos).Magnitude / math.max(velocity, 1)
 				p = p + root.Velocity * travelTime * S.aimPrediction
-				if S.weaponPrediction then p = p + Vector3.new(0, 0.5 * Workspace.Gravity * travelTime * travelTime, 0) end
+				if S.weaponPrediction then p = p + Vector3.new(0, 0.5 * Workspace.Gravity * travelTime * travelTime * S.weaponDropScale, 0) end
 			end
 			local dir = (p - camPos).Unit
 			local angle = math.deg(math.acos(math.clamp(camDir:Dot(dir), -1, 1)))
@@ -2048,6 +2049,10 @@ local ObjectESP = (function()
 		ammo = {"ammo", "bullet", "round", "magazine", "mag_", "9mm", "556", "762", "shell"},
 		weapon = {"weapon", "gun", "rifle", "pistol", "shotgun", "smg", "sniper", "revolver", "rpg", "ak", "m4"},
 		tool = {"tool", "wrench", "hammer", "axe", "pickaxe", "saw", "medkit", "bandage"},
+		medical = {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"},
+		armor = {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"},
+		food = {"water", "food", "beans", "milk", "cola", "drink", "jerky"},
+		key = {"key", "keycard", "card"}, attachment = {"scope", "sight", "muzzle", "suppressor", "grip", "stock"},
 	}
 
 	local function remove(instance)
@@ -2076,6 +2081,9 @@ local ObjectESP = (function()
 			or (category == "weapon" and S.objectWeapons)
 			or (category == "tool" and S.objectTools)
 			or (category == "misc" and S.objectMisc)
+			or (category == "medical" and S.objectMedical) or (category == "armor" and S.objectArmor)
+			or (category == "food" and S.objectFood) or (category == "key" and S.objectKeys)
+			or (category == "attachment" and S.objectAttachments)
 	end
 
 	local function scan()
@@ -2114,8 +2122,9 @@ local ObjectESP = (function()
 			if not pos then remove(instance) else
 				local point, onScreen = Camera:WorldToViewportPoint(pos)
 				text.Visible = onScreen and point.Z > 0
+				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
+				text.Visible = onScreen and point.Z > 0 and (S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
 				if text.Visible then
-					local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
 					text.Position = Vector2.new(point.X, point.Y)
 					text.Color = Color3.fromRGB(80, 190, 255)
 					text.Text = string.format("%s | %dm", instance.Name, distance)
@@ -2131,8 +2140,12 @@ local ObjectESP = (function()
 		elseif category == "weapon" then S.objectWeapons = on
 		elseif category == "misc" then S.objectMisc = on
 		elseif category == "tool" then S.objectTools = on end
+		if category == "medical" then S.objectMedical = on elseif category == "armor" then S.objectArmor = on
+		elseif category == "food" then S.objectFood = on elseif category == "key" then S.objectKeys = on
+		elseif category == "attachment" then S.objectAttachments = on end
 		scan()
 	end
+	function self.setDistance(value) S.objectEspDistance = value end
 	return self
 end)()
 -- ============================================================
@@ -2988,7 +3001,7 @@ local Configs = (function()
 			aimEnabled=S.aimEnabled, aimMode=S.aimMode, aimPart=S.aimPart,
 			aimFov=S.aimFov, aimSmoothing=S.aimSmoothing, aimPrediction=S.aimPrediction,
 			aimVisibleOnly=S.aimVisibleOnly, aimNPCs=S.aimNPCs, perfectSilent=S.perfectSilent,
-			weaponPrediction=S.weaponPrediction, weaponAntiRecoil=S.weaponAntiRecoil, weaponRecoilStrength=S.weaponRecoilStrength,
+			weaponPrediction=S.weaponPrediction, weaponAntiRecoil=S.weaponAntiRecoil, weaponRecoilStrength=S.weaponRecoilStrength, weaponDropScale=S.weaponDropScale,
 			silentHitChance=S.silentHitChance,
 			holdKeyType=S.holdKey.type, holdKeyName=S.holdKey.code.Name,
 			aimActivationMode=S.aimActivationMode,
@@ -3002,7 +3015,7 @@ local Configs = (function()
 			groundMinValue=S.groundMinValue,
 			highValueAlerts=S.highValueAlerts, highValueAlertMin=S.highValueAlertMin,
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
-			objectMisc=S.objectMisc, objectTools=S.objectTools, objectEspUnlimited=S.objectEspUnlimited,
+			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
 			freeCam=S.freeCam, freeCamSpeed=S.freeCamSpeed, autoLoadDefault=S.autoLoadDefault,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -3036,7 +3049,7 @@ local Configs = (function()
 		S.aimPart=valueOf(t, "aimPart", "Head"); S.aimFov=valueOf(t, "aimFov", 90)
 		S.aimSmoothing=valueOf(t, "aimSmoothing", 0.3); S.aimPrediction=valueOf(t, "aimPrediction", 0)
 		S.aimVisibleOnly=valueOf(t, "aimVisibleOnly", false); S.aimNPCs=valueOf(t, "aimNPCs", false); S.perfectSilent=valueOf(t, "perfectSilent", false)
-		S.weaponPrediction=valueOf(t, "weaponPrediction", true); S.weaponAntiRecoil=valueOf(t, "weaponAntiRecoil", false); S.weaponRecoilStrength=valueOf(t, "weaponRecoilStrength", 1)
+		S.weaponPrediction=valueOf(t, "weaponPrediction", false); S.weaponAntiRecoil=valueOf(t, "weaponAntiRecoil", false); S.weaponRecoilStrength=valueOf(t, "weaponRecoilStrength", 1); S.weaponDropScale=valueOf(t, "weaponDropScale", 0.05)
 		S.silentHitChance=valueOf(t, "silentHitChance", 100)
 		local code
 		if t.holdKeyType == "mouse" then
@@ -3065,6 +3078,7 @@ local Configs = (function()
 		S.objectAmmo=valueOf(t, "objectAmmo", false); S.objectWeapons=valueOf(t, "objectWeapons", false)
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
 		S.objectEspUnlimited=valueOf(t, "objectEspUnlimited", true)
+		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
 		S.autoLoadDefault=valueOf(t, "autoLoadDefault", false)
 
@@ -3116,6 +3130,7 @@ local Configs = (function()
 		ObjectESP.setEnabled(S.objectEsp)
 		ObjectESP.setCategory("ammo", S.objectAmmo); ObjectESP.setCategory("weapon", S.objectWeapons)
 		ObjectESP.setCategory("misc", S.objectMisc); ObjectESP.setCategory("tool", S.objectTools)
+		ObjectESP.setCategory("medical", S.objectMedical); ObjectESP.setCategory("armor", S.objectArmor); ObjectESP.setCategory("food", S.objectFood); ObjectESP.setCategory("key", S.objectKeys); ObjectESP.setCategory("attachment", S.objectAttachments); ObjectESP.setDistance(S.objectEspDistance)
 		PlayerList.setEnabled(S.playerList)
 		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
 		Footsteps.setEnabled(S.footsteps)
@@ -3340,6 +3355,7 @@ addSection("Weapon Profile Assist")
 UIControls.weaponPrediction = addToggle("Dynamic Ballistic Prediction", S.weaponPrediction, function(on) S.weaponPrediction = on end)
 UIControls.weaponAntiRecoil = addToggle("Anti Recoil", S.weaponAntiRecoil, function(on) S.weaponAntiRecoil = on end)
 addSlider("Recoil Compensation", 0, 2, S.weaponRecoilStrength, 2, function(v) S.weaponRecoilStrength = v end)
+addSlider("Bullet Drop Scale", 0, 0.25, S.weaponDropScale, 3, function(v) S.weaponDropScale = v end)
 
 addSection("Activation")
 addKeyBind("Activation Key", function() return H.holdKeyName() end, function(k) S.holdKey = k end)
@@ -3442,12 +3458,18 @@ addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP
 addSection("Container Contents ESP")
 UIControls.containerContentsEsp = addToggle("Show Contents", S.containerContentsEsp, function(on) GroundESP.setContainerContents(on) end)
 
-addSection("Map Object ESP — Unlimited Range")
+addSection("Map Object ESP")
 UIControls.objectEsp = addToggle("Enable Object ESP", S.objectEsp, function(on) ObjectESP.setEnabled(on) end)
 UIControls.objectAmmo = addToggle("Ammo", S.objectAmmo, function(on) ObjectESP.setCategory("ammo", on) end)
 UIControls.objectWeapons = addToggle("Weapons", S.objectWeapons, function(on) ObjectESP.setCategory("weapon", on) end)
 UIControls.objectTools = addToggle("Tools", S.objectTools, function(on) ObjectESP.setCategory("tool", on) end)
 UIControls.objectMisc = addToggle("Miscellaneous", S.objectMisc, function(on) ObjectESP.setCategory("misc", on) end)
+UIControls.objectMedical = addToggle("Medical", S.objectMedical, function(on) ObjectESP.setCategory("medical", on) end)
+UIControls.objectArmor = addToggle("Armor", S.objectArmor, function(on) ObjectESP.setCategory("armor", on) end)
+UIControls.objectFood = addToggle("Food & Drinks", S.objectFood, function(on) ObjectESP.setCategory("food", on) end)
+UIControls.objectKeys = addToggle("Keys & Cards", S.objectKeys, function(on) ObjectESP.setCategory("key", on) end)
+UIControls.objectAttachments = addToggle("Attachments", S.objectAttachments, function(on) ObjectESP.setCategory("attachment", on) end)
+addSlider("ESP Distance (0 = Unlimited)", 0, 5000, S.objectEspDistance, 0, function(v) ObjectESP.setDistance(v) end)
 
 addSection("Corpses ESP")
 UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
@@ -3803,4 +3825,5 @@ end)
 setTab("Combat")
 setMenuVisible(true)
 
-Configs.autoLoad()
+-- Injection always starts from the explicit defaults. Profiles apply only when
+-- the administrator chooses Load in the Config tab.
