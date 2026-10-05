@@ -41,10 +41,12 @@ local C = {
 local S = {
 	aimEnabled=false, aimMode="Lock", aimPart="Head", aimFov=90,
 	aimSmoothing=0.3, aimPrediction=0, aimVisibleOnly=false,
+	aimNPCs=false,
 	holdKey={type="key", code=Enum.KeyCode.F}, aimActivationMode="Toggle",
 	perfectSilent=false, silentHitChance=100,
 
 	espBox=false, espSkeleton=false, espTracer=false,
+	espShowHeldItem=false, espShowAiming=false,
 	npcEspBox=false, npcEspSkeleton=false, npcEspTracer=false,
 
 	playerGlow=false, npcGlow=false, glowTransparency=0.5,
@@ -92,6 +94,28 @@ local H = (function()
 		local root = model:FindFirstChild("HumanoidRootPart")
 		if not (hum and head and root) then return false end
 		return Players:GetPlayerFromCharacter(model) == nil
+	end
+
+	function self.getHeldItemName(character)
+		if not character then return nil end
+		local tool = character:FindFirstChildOfClass("Tool")
+		return tool and tool.Name or nil
+	end
+
+	function self.isAiming(character)
+		if not character then return false end
+		-- Different games replicate ADS state under different names. Prefer an
+		-- explicit replicated flag instead of inferring it from where a model faces.
+		for _, container in ipairs({character, character:FindFirstChildOfClass("Tool")}) do
+			if container then
+				for _, name in ipairs({"Aiming", "IsAiming", "Aim", "ADS", "IsADS"}) do
+					if container:GetAttribute(name) == true then return true end
+					local flag = container:FindFirstChild(name, true)
+					if flag and flag:IsA("BoolValue") and flag.Value then return true end
+				end
+			end
+		end
+		return false
 	end
 
 	self.activeNPCs = {}
@@ -190,7 +214,7 @@ local ESP = (function()
 	local function clearESP(plr)
 		local ds = drawings[plr]
 		if ds then
-			ds.box:Remove(); ds.nameTag:Remove(); ds.distTag:Remove(); ds.healthBar:Remove()
+			ds.box:Remove(); ds.nameTag:Remove(); ds.distTag:Remove(); ds.heldItemTag:Remove(); ds.aimingTag:Remove(); ds.healthBar:Remove()
 			drawings[plr] = nil
 		end
 	end
@@ -213,6 +237,12 @@ local ESP = (function()
 		ds.distTag = Drawing.new("Text")
 		ds.distTag.Visible = false; ds.distTag.Color = Color3.fromRGB(100,180,255); ds.distTag.Size = 13
 		ds.distTag.Center = true; ds.distTag.Outline = true; ds.distTag.OutlineColor = Color3.new(0,0,0)
+		ds.heldItemTag = Drawing.new("Text")
+		ds.heldItemTag.Visible = false; ds.heldItemTag.Color = Color3.fromRGB(255, 220, 120); ds.heldItemTag.Size = 13
+		ds.heldItemTag.Center = true; ds.heldItemTag.Outline = true; ds.heldItemTag.OutlineColor = Color3.new(0,0,0)
+		ds.aimingTag = Drawing.new("Text")
+		ds.aimingTag.Visible = false; ds.aimingTag.Color = Color3.fromRGB(255, 110, 110); ds.aimingTag.Size = 13
+		ds.aimingTag.Center = true; ds.aimingTag.Outline = true; ds.aimingTag.OutlineColor = Color3.new(0,0,0)
 		ds.healthBar = Drawing.new("Line")
 		ds.healthBar.Visible = false; ds.healthBar.Thickness = 2
 		drawings[plr] = ds
@@ -240,7 +270,7 @@ local ESP = (function()
 		local hum  = char:FindFirstChild("Humanoid")
 		if not (head and root and hum) then
 			ds.box.Visible = false; ds.nameTag.Visible = false
-			ds.distTag.Visible = false; ds.healthBar.Visible = false
+			ds.distTag.Visible = false; ds.heldItemTag.Visible = false; ds.aimingTag.Visible = false; ds.healthBar.Visible = false
 			return
 		end
 		local top = head.Position + Vector3.new(0, 1.2, 0)
@@ -249,7 +279,7 @@ local ESP = (function()
 		local botV, botOn = Camera:WorldToViewportPoint(bottom)
 		if not (topOn and botOn) or topV.Z <= 0 or botV.Z <= 0 then
 			ds.box.Visible = false; ds.nameTag.Visible = false
-			ds.distTag.Visible = false; ds.healthBar.Visible = false
+			ds.distTag.Visible = false; ds.heldItemTag.Visible = false; ds.aimingTag.Visible = false; ds.healthBar.Visible = false
 			return
 		end
 		local h = math.abs(botV.Y - topV.Y)
@@ -266,6 +296,20 @@ local ESP = (function()
 		ds.distTag.Position = Vector2.new(topV.X, pos.Y - 30)
 		ds.distTag.Visible = true
 		ds.distTag.Text = dist .. "m"
+		local nextTagY = pos.Y - 44
+		local heldItem = S.espShowHeldItem and H.getHeldItemName(char)
+		ds.heldItemTag.Visible = heldItem ~= nil
+		if heldItem then
+			ds.heldItemTag.Position = Vector2.new(topV.X, nextTagY)
+			ds.heldItemTag.Text = "[" .. heldItem .. "]"
+			nextTagY = nextTagY - 14
+		end
+		local aiming = S.espShowAiming and H.isAiming(char)
+		ds.aimingTag.Visible = aiming
+		if aiming then
+			ds.aimingTag.Position = Vector2.new(topV.X, nextTagY)
+			ds.aimingTag.Text = "[AIMING]"
+		end
 
 		local hp = hum.Health / hum.MaxHealth
 		local barHeight = h * hp
@@ -360,7 +404,7 @@ local ESP = (function()
 			if char then updateESPForTarget(plr, char, ds, false)
 			else
 				ds.box.Visible = false; ds.nameTag.Visible = false
-				ds.distTag.Visible = false; ds.healthBar.Visible = false
+				ds.distTag.Visible = false; ds.heldItemTag.Visible = false; ds.aimingTag.Visible = false; ds.healthBar.Visible = false
 			end
 		end
 	end
@@ -1048,29 +1092,31 @@ local Aimbot = (function()
 		local camDir = Camera.CFrame.LookVector
 		local best, bestScore = nil, math.huge
 
+		local function considerCharacter(char)
+			local target = char:FindFirstChild(S.aimPart) or char:FindFirstChild("Head")
+			local hum = char:FindFirstChild("Humanoid")
+			if not (target and hum and hum.Health > 0) then return end
+			local root = char:FindFirstChild("HumanoidRootPart")
+			local checkPos = root and root.Position or target.Position
+			if S.aimVisibleOnly and not H.isVisible(checkPos, char) then return end
+			local p = target.Position
+			if applyPrediction and S.aimPrediction > 0 and root then
+				p = p + root.Velocity * S.aimPrediction * 0.2
+			end
+			local dir = (p - camPos).Unit
+			local angle = math.deg(math.acos(math.clamp(camDir:Dot(dir), -1, 1)))
+			if angle < (S.aimFov / 2) and angle < bestScore then
+				bestScore = angle
+				best = {pos = p, model = char, root = root}
+			end
+		end
+
 		for _, plr in ipairs(Players:GetPlayers()) do
-			if plr ~= LocalPlayer then
-				local char = plr.Character
-				if char then
-					local target = char:FindFirstChild(S.aimPart) or char:FindFirstChild("Head")
-					local hum = char:FindFirstChild("Humanoid")
-					if target and hum and hum.Health > 0 then
-						local root = char:FindFirstChild("HumanoidRootPart")
-						local checkPos = root and root.Position or target.Position
-						if not (S.aimVisibleOnly and not H.isVisible(checkPos, char)) then
-							local p = target.Position
-							if applyPrediction and S.aimPrediction > 0 and root then
-								p = p + root.Velocity * S.aimPrediction * 0.2
-							end
-							local dir = (p - camPos).Unit
-							local angle = math.deg(math.acos(math.clamp(camDir:Dot(dir), -1, 1)))
-							if angle < (S.aimFov / 2) and angle < bestScore then
-								bestScore = angle
-								best = {pos = p, model = char, root = root}
-							end
-						end
-					end
-				end
+			if plr ~= LocalPlayer and plr.Character then considerCharacter(plr.Character) end
+		end
+		if S.aimNPCs then
+			for _, npc in ipairs(H.activeNPCs) do
+				if npc.Parent and H.isNPC(npc) then considerCharacter(npc) end
 			end
 		end
 		return best
@@ -2665,11 +2711,12 @@ local Configs = (function()
 		return {
 			aimEnabled=S.aimEnabled, aimMode=S.aimMode, aimPart=S.aimPart,
 			aimFov=S.aimFov, aimSmoothing=S.aimSmoothing, aimPrediction=S.aimPrediction,
-			aimVisibleOnly=S.aimVisibleOnly, perfectSilent=S.perfectSilent,
+			aimVisibleOnly=S.aimVisibleOnly, aimNPCs=S.aimNPCs, perfectSilent=S.perfectSilent,
 			silentHitChance=S.silentHitChance,
 			holdKeyType=S.holdKey.type, holdKeyName=S.holdKey.code.Name,
 			aimActivationMode=S.aimActivationMode,
 			espBox=S.espBox, espSkeleton=S.espSkeleton, espTracer=S.espTracer,
+			espShowHeldItem=S.espShowHeldItem, espShowAiming=S.espShowAiming,
 			npcEspBox=S.npcEspBox, npcEspSkeleton=S.npcEspSkeleton, npcEspTracer=S.npcEspTracer,
 			playerGlow=S.playerGlow, npcGlow=S.npcGlow, glowTransparency=S.glowTransparency,
 			footsteps=S.footsteps, footstepSize=S.footstepSize,
@@ -2699,7 +2746,7 @@ local Configs = (function()
 		S.aimEnabled=t.aimEnabled or false; S.aimMode=t.aimMode or "Lock"
 		S.aimPart=t.aimPart or "Head"; S.aimFov=t.aimFov or 90
 		S.aimSmoothing=t.aimSmoothing or 0.3; S.aimPrediction=t.aimPrediction or 0
-		S.aimVisibleOnly=t.aimVisibleOnly or false; S.perfectSilent=t.perfectSilent or false
+		S.aimVisibleOnly=t.aimVisibleOnly or false; S.aimNPCs=t.aimNPCs or false; S.perfectSilent=t.perfectSilent or false
 		S.silentHitChance=t.silentHitChance or 100
 		local code
 		if t.holdKeyType == "mouse" then
@@ -2711,6 +2758,7 @@ local Configs = (function()
 		S.aimActivationMode = t.aimActivationMode or "Toggle"
 
 		S.espBox=t.espBox or false; S.espSkeleton=t.espSkeleton or false; S.espTracer=t.espTracer or false
+		S.espShowHeldItem=t.espShowHeldItem or false; S.espShowAiming=t.espShowAiming or false
 		S.npcEspBox=t.npcEspBox or false; S.npcEspSkeleton=t.npcEspSkeleton or false; S.npcEspTracer=t.npcEspTracer or false
 
 		S.playerGlow=t.playerGlow or false; S.npcGlow=t.npcGlow or false
@@ -2938,6 +2986,7 @@ addModeSwitch("Aim Mode", {
 UIControls.perfectSilent = addToggle("Perfect Silent (no weapon move)", S.perfectSilent, function(on) S.perfectSilent = on end)
 addSlider("Hit Chance (Silent)", 0, 100, S.silentHitChance, 0, function(v) S.silentHitChance = v end)
 UIControls.aimVisibleOnly = addToggle("Visible Only", S.aimVisibleOnly, function(on) S.aimVisibleOnly = on end)
+UIControls.aimNPCs = addToggle("Target NPCs", S.aimNPCs, function(on) S.aimNPCs = on end)
 
 addSection("Activation")
 addKeyBind("Activation Key", function() return H.holdKeyName() end, function(k) S.holdKey = k end)
@@ -2989,6 +3038,10 @@ addSection("Player Glow")
 UIControls.playerGlow = addToggle("Enable", S.playerGlow, function(on) Glow.setPlayerGlow(on) end)
 addColorButton("Color", function() return C.GLOW end, function(c) C.GLOW = c; Glow.setColor(c) end)
 addSlider("Transparency", 0, 1, S.glowTransparency, 2, function(v) Glow.setTransparency(v) end)
+
+addSection("Player Labels")
+UIControls.espShowHeldItem = addToggle("Show Held Item", S.espShowHeldItem, function(on) S.espShowHeldItem = on end)
+UIControls.espShowAiming = addToggle("Show Aiming", S.espShowAiming, function(on) S.espShowAiming = on end)
 
 addSection("Footsteps")
 UIControls.footsteps = addToggle("Enable", S.footsteps, function(on) Footsteps.setEnabled(on) end)
@@ -3258,10 +3311,11 @@ addButton("Unload Hub", THEME.danger, destroyHub)
 addSection("Reset")
 addButton("Reset Settings", THEME.danger, function()
 	S.aimEnabled=false; S.aimMode="Lock"; S.aimPart="Head"; S.aimFov=90
-	S.aimSmoothing=0.3; S.aimPrediction=0; S.aimVisibleOnly=false
+	S.aimSmoothing=0.3; S.aimPrediction=0; S.aimVisibleOnly=false; S.aimNPCs=false
 	S.perfectSilent=false; S.silentHitChance=100
 	S.holdKey={type="key",code=Enum.KeyCode.F}; S.aimActivationMode="Toggle"
 	S.espBox=false; S.espSkeleton=false; S.espTracer=false
+	S.espShowHeldItem=false; S.espShowAiming=false
 	S.npcEspBox=false; S.npcEspSkeleton=false; S.npcEspTracer=false
 	S.playerGlow=false; S.npcGlow=false; S.glowTransparency=0.5
 	S.footsteps=false; S.footstepSize=4
