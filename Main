@@ -63,7 +63,6 @@ local S = {
 	objectEspDistance=500,
 
 	freeCam=false, freeCamSpeed=50,
-	autoLoadDefault=false,
 
 	fullbright=false, noFog=false,
 	dismissKey=Enum.KeyCode.Semicolon,
@@ -2066,13 +2065,14 @@ local ObjectESP = (function()
 	local self = {}
 	local drawings, lastScan = {}, 0
 	local keywords = {
-		ammo = {"ammo", "bullet", "round", "magazine", "mag_", "9mm", "556", "762", "shell"},
-		weapon = {"weapon", "gun", "rifle", "pistol", "shotgun", "smg", "sniper", "revolver", "rpg", "ak", "m4"},
-		tool = {"tool", "wrench", "hammer", "axe", "pickaxe", "saw", "medkit", "bandage"},
-		medical = {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"},
-		armor = {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"},
-		food = {"water", "food", "beans", "milk", "cola", "drink", "jerky"},
-		key = {"key", "keycard", "card"}, attachment = {"scope", "sight", "muzzle", "suppressor", "grip", "stock"},
+		{"medical", {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"}},
+		{"armor", {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"}},
+		{"attachment", {"scope", "sight", "muzzle", "suppressor", "grip", "stock"}},
+		{"ammo", {"ammo", "bullet", "round", "magazine", "mag_", "9mm", "556", "762", "shell"}},
+		{"weapon", {"weapon", "gun", "rifle", "pistol", "shotgun", "smg", "sniper", "revolver", "rpg", "ak", "m4"}},
+		{"tool", {"tool", "wrench", "hammer", "axe", "pickaxe", "saw"}},
+		{"food", {"water", "food", "beans", "milk", "cola", "drink", "jerky"}},
+		{"key", {"key", "keycard", "card"}},
 	}
 
 	local function remove(instance)
@@ -2082,7 +2082,8 @@ local ObjectESP = (function()
 
 	local function categoryFor(instance)
 		local text = string.lower(instance.Name .. " " .. tostring(instance:GetAttribute("DisplayName") or "") .. " " .. tostring(instance:GetAttribute("ItemType") or ""))
-		for category, words in pairs(keywords) do
+		for _, rule in ipairs(keywords) do
+			local category, words = rule[1], rule[2]
 			for _, word in ipairs(words) do if string.find(text, word, 1, true) then return category end end
 		end
 		if instance:IsA("Tool") or instance:GetAttribute("ItemType") or instance:GetAttribute("DisplayName") then return "misc" end
@@ -3049,7 +3050,7 @@ local Configs = (function()
 			highValueAlerts=S.highValueAlerts, highValueAlertMin=S.highValueAlertMin,
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
 			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
-			freeCam=S.freeCam, freeCamSpeed=S.freeCamSpeed, autoLoadDefault=S.autoLoadDefault,
+			freeCamSpeed=S.freeCamSpeed,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
 			baseFov=S.baseFov, zoomFov=S.zoomFov, zoomKeyName=S.zoomKey.Name,
@@ -3110,10 +3111,8 @@ local Configs = (function()
 		S.objectEsp=valueOf(t, "objectEsp", false)
 		S.objectAmmo=valueOf(t, "objectAmmo", false); S.objectWeapons=valueOf(t, "objectWeapons", false)
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
-		S.objectEspUnlimited=valueOf(t, "objectEspUnlimited", true)
 		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
-		S.autoLoadDefault=valueOf(t, "autoLoadDefault", false)
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
 		S.dismissKey = Enum.KeyCode[t.dismissKeyName or "Semicolon"] or Enum.KeyCode.Semicolon
@@ -3171,7 +3170,8 @@ local Configs = (function()
 		VM.setVMEnabled(S.vmEnabled); VM.setWpnEnabled(S.wpnEnabled)
 		Inventory.setEnabled(S.invEnabled)
 		Freecam.setSpeed(S.freeCamSpeed)
-		if valueOf(t, "freeCam", false) then Freecam.setEnabled(true) else Freecam.stop() end
+		-- A profile restores settings, never an active scripted camera state.
+		Freecam.stop()
 		syncToggleControls()
 	end
 
@@ -3241,42 +3241,6 @@ local Configs = (function()
 		self.apply(data)
 		showConfigStatus("Default configuration loaded")
 		return true
-	end
-
-	function self.setAutoLoadDefault(on)
-		S.autoLoadDefault = on
-		SaveFile("AutoLoadConfig", on and "default" or "")
-		showConfigStatus(on and "Default configuration will auto-load" or "Default auto-load disabled")
-	end
-
-	function self.autoLoad()
-		local lastAuto = nil
-		if isfile and readfile then
-			lastAuto = LoadFile("AutoLoadConfig")
-		elseif ReplicatedStorage:FindFirstChild("LirpConfigRemote") then
-			local ok, result = pcall(function() return ReplicatedStorage.LirpConfigRemote:InvokeServer("lastAuto") end)
-			if ok and type(result) == "string" then lastAuto = result end
-		end
-		lastAuto = lastAuto and tostring(lastAuto):gsub("^%s*(.-)%s*$", "%1") or nil
-		if not lastAuto or lastAuto == "" then return end
-		local data = nil
-		local raw = LoadFile(lastAuto)
-		if raw then
-			local ok, dec = pcall(function() return HttpService:JSONDecode(raw) end)
-			if ok and type(dec) == "table" then data = dec end
-		end
-		if not data then
-			local remote = ReplicatedStorage:FindFirstChild("LirpConfigRemote")
-			if remote then
-				local ok, result = pcall(function() return remote:InvokeServer("load", lastAuto) end)
-				if ok and type(result) == "table" then data = result end
-			end
-		end
-		if data then
-			self.apply(data)
-			print("[Config] AutoLoad: " .. lastAuto)
-			showConfigStatus("Auto-loaded " .. lastAuto)
-		end
 	end
 
 	return self
@@ -3706,8 +3670,7 @@ for i = 1, 3 do
 	loadBtn.MouseButton1Click:Connect(function() Configs.load(idx) end)
 end
 
-addSection("Default Configuration")
-UIControls.autoLoadDefault = addToggle("Auto-load Default", S.autoLoadDefault, function(on) Configs.setAutoLoadDefault(on) end)
+addSection("Default Profile")
 addButton("Save Current as Default", THEME.success, function() Configs.saveDefault() end)
 addButton("Load Default", THEME.accent, function() Configs.loadDefault() end)
 
@@ -3724,6 +3687,7 @@ local function destroyHub()
 	ObjectESP.setEnabled(false)
 	WorldSearch.clearFocus()
 	Freecam.stop()
+	if freecamOverlay then freecamOverlay:Destroy() end
 	PlayerList.setEnabled(false)
 	AdminTools.stopSpectating()
 	World.setFullbright(false); World.setNoFog(false)
@@ -3765,8 +3729,8 @@ addButton("Reset Settings", THEME.danger, function()
 	S.playerList=false; S.fullbright=false; S.noFog=false
 	S.groundItemEsp=false; S.corpseEsp=false; S.containerContentsEsp=false; S.groundMinValue=0
 	S.highValueAlerts=false; S.highValueAlertMin=10000
-	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false; S.objectEspUnlimited=true
-	S.freeCam=false; S.freeCamSpeed=50; S.autoLoadDefault=false
+	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false
+	S.freeCam=false; S.freeCamSpeed=50
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
 	S.vmEnabled=false; S.vmTransparency=0; S.vmOffsetX=0; S.vmOffsetY=0; S.vmOffsetZ=0
