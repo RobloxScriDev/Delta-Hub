@@ -52,7 +52,7 @@ local S = {
 	footsteps=false, footstepSize=4,
 
 	playerList=false,
-	groundItemEsp=false, corpseEsp=false, groundMinValue=0, groundMaxDistance=1500,
+	groundItemEsp=false, corpseEsp=false, groundMinValue=0,
 	highValueAlerts=false, highValueAlertMin=10000,
 
 	fullbright=false, noFog=false,
@@ -70,6 +70,7 @@ local S = {
 	invShowName=true, invShowValue=true, invShowFull=false,
 	invIncludeCorpse=false, invMaxAngleDeg=45, invMaxDistance=500,
 	invShowAttach=true,
+	objectSearchScope="All Workspace",
 }
 
 local isHolding        = false
@@ -94,15 +95,35 @@ local H = (function()
 	end
 
 	self.activeNPCs = {}
+	local activeNPCSet = {}
+	local function addNPC(model)
+		if model and self.isNPC(model) and not activeNPCSet[model] then
+			activeNPCSet[model] = true
+			table.insert(self.activeNPCs, model)
+		end
+	end
+	local function findAndAddNPCFrom(desc)
+		local candidate = desc:IsA("Model") and desc or desc.Parent
+		while candidate and candidate ~= Workspace do
+			if candidate:IsA("Model") then addNPC(candidate) end
+			candidate = candidate.Parent
+		end
+	end
 	for _, obj in ipairs(Workspace:GetDescendants()) do
-		if self.isNPC(obj) then table.insert(self.activeNPCs, obj) end
+		if obj:IsA("Model") then addNPC(obj) end
 	end
 	Workspace.DescendantAdded:Connect(function(desc)
-		if self.isNPC(desc) then table.insert(self.activeNPCs, desc) end
+		-- A model can be replicated before Humanoid, Head, or RootPart. Check its
+		-- ancestors on every addition so it is registered as soon as it is complete.
+		findAndAddNPCFrom(desc)
 	end)
 	Workspace.DescendantRemoving:Connect(function(desc)
 		for i, npc in ipairs(self.activeNPCs) do
-			if npc == desc then table.remove(self.activeNPCs, i); break end
+			if npc == desc then
+				activeNPCSet[npc] = nil
+				table.remove(self.activeNPCs, i)
+				break
+			end
 		end
 	end)
 
@@ -613,11 +634,8 @@ local NPCEsp = (function()
 	function self.createTracer(model) createTrc(model) end
 
 	Workspace.DescendantAdded:Connect(function(desc)
-		if H.isNPC(desc) then
-			if S.npcEspBox      then createESP(desc) end
-			if S.npcEspSkeleton then createSkel(desc) end
-			if S.npcEspTracer   then createTrc(desc) end
-		end
+		-- Defer until the helper has registered models that arrive piece by piece.
+		task.defer(self.scan)
 	end)
 
 	return self
@@ -1791,7 +1809,7 @@ local GroundESP = (function()
 			else
 				local point, onScreen = Camera:WorldToViewportPoint(pos)
 				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
-				data.text.Visible = onScreen and point.Z > 0 and distance <= S.groundMaxDistance
+				data.text.Visible = onScreen and point.Z > 0
 				data.text.Position = Vector2.new(point.X, point.Y)
 				data.text.Color = data.kind == "corpse" and C.CORPSE or C.GROUND_ITEM
 				data.text.Text = string.format("%s | $%d | %dm", data.name, math.floor(data.value), distance)
@@ -1802,9 +1820,92 @@ local GroundESP = (function()
 	function self.setGroundItems(on) S.groundItemEsp = on; scan() end
 	function self.setCorpses(on) S.corpseEsp = on; scan() end
 	function self.setMinValue(value) S.groundMinValue = value; scan() end
-	function self.setMaxDistance(value) S.groundMaxDistance = value end
 	function self.setAlerts(on) S.highValueAlerts = on; scan() end
 	function self.setAlertMin(value) S.highValueAlertMin = value end
+
+	return self
+end)()
+-- ============================================================
+-- MAP OBJECT FINDER (read-only)
+-- ============================================================
+local WorldSearch = (function()
+	local self = {}
+	local activeHighlight, focusToken = nil, 0
+
+	local function getRoot(scope)
+		if scope == "Containers" then return Workspace:FindFirstChild("Containers") end
+		if scope == "Dropped Items" then return Workspace:FindFirstChild("DroppedItems") end
+		return Workspace
+	end
+
+	local function getPosition(instance)
+		if instance:IsA("BasePart") then return instance.Position end
+		if instance:IsA("Model") then return instance:GetPivot().Position end
+		local part = instance:FindFirstChildWhichIsA("BasePart", true)
+		return part and part.Position or nil
+	end
+
+	local function matches(instance, query)
+		local name = string.lower(instance.Name)
+		local displayName = string.lower(tostring(instance:GetAttribute("DisplayName") or ""))
+		for word in string.gmatch(string.lower(query), "%S+") do
+			if not string.find(name, word, 1, true) and not string.find(displayName, word, 1, true) then
+				return false
+			end
+		end
+		return true
+	end
+
+	function self.search(query, scope)
+		query = tostring(query or ""):gsub("^%s*(.-)%s*$", "%1")
+		if query == "" then return {}, 0, "Enter an object name to search." end
+		local root = getRoot(scope)
+		if not root then return {}, 0, "The selected map folder is not replicated." end
+
+		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+		local results, count = {}, 0
+		for _, instance in ipairs(root:GetDescendants()) do
+			if (instance:IsA("Model") or instance:IsA("BasePart")) and matches(instance, query) then
+				count = count + 1
+				local position = getPosition(instance)
+				local distance = myRoot and position and (myRoot.Position - position).Magnitude * 0.28 or nil
+				table.insert(results, {instance=instance, distance=distance})
+			end
+		end
+		table.sort(results, function(a, b)
+			return (a.distance or math.huge) < (b.distance or math.huge)
+		end)
+		return results, count, nil
+	end
+
+	function self.focus(instance)
+		if activeHighlight then activeHighlight:Destroy(); activeHighlight = nil end
+		if not instance or not instance.Parent then return end
+		local adornee = instance
+		if not adornee:IsA("Model") and not adornee:IsA("BasePart") then return end
+		focusToken = focusToken + 1
+		local token = focusToken
+		local highlight = Instance.new("Highlight")
+		highlight.Name = "DeltaObjectSearchFocus"
+		highlight.Adornee = adornee
+		highlight.FillColor = Color3.fromRGB(74, 190, 255)
+		highlight.OutlineColor = Color3.new(1, 1, 1)
+		highlight.FillTransparency = 0.5
+		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		highlight.Parent = adornee
+		activeHighlight = highlight
+		task.delay(12, function()
+			if token == focusToken and activeHighlight == highlight then
+				highlight:Destroy()
+				activeHighlight = nil
+			end
+		end)
+	end
+
+	function self.clearFocus()
+		focusToken = focusToken + 1
+		if activeHighlight then activeHighlight:Destroy(); activeHighlight = nil end
+	end
 
 	return self
 end)()
@@ -2198,6 +2299,31 @@ local function addButton(text, color, callback)
 	return btn
 end
 
+local function addTextInput(placeholder, initial, onSubmitted)
+	local parent = getCurrentContainer(); if not parent then return nil end
+	local input = Instance.new("TextBox", parent)
+	input.Size = UDim2.new(1, -6, 0, 34)
+	input.BackgroundColor3 = THEME.card
+	input.BorderSizePixel = 0
+	input.ClearTextOnFocus = false
+	input.PlaceholderText = placeholder
+	input.PlaceholderColor3 = THEME.textDim
+	input.Text = initial or ""
+	input.TextColor3 = THEME.text
+	input.Font = Enum.Font.GothamMedium
+	input.TextSize = 13
+	input.TextXAlignment = Enum.TextXAlignment.Left
+	input.LayoutOrder = #parent:GetChildren() + 1
+	Instance.new("UICorner", input).CornerRadius = UDim.new(0, 6)
+	local padding = Instance.new("UIPadding", input)
+	padding.PaddingLeft = UDim.new(0, 12)
+	padding.PaddingRight = UDim.new(0, 12)
+	input.FocusLost:Connect(function(enterPressed)
+		if enterPressed and onSubmitted then onSubmitted(input.Text) end
+	end)
+	return input
+end
+
 local function addKeyBind(label, getKeyName, onPicked)
 	local parent = getCurrentContainer(); if not parent then return end
 	local c = Instance.new("Frame", parent)
@@ -2549,7 +2675,7 @@ local Configs = (function()
 			footsteps=S.footsteps, footstepSize=S.footstepSize,
 			playerList=S.playerList,
 			groundItemEsp=S.groundItemEsp, corpseEsp=S.corpseEsp,
-			groundMinValue=S.groundMinValue, groundMaxDistance=S.groundMaxDistance,
+			groundMinValue=S.groundMinValue,
 			highValueAlerts=S.highValueAlerts, highValueAlertMin=S.highValueAlertMin,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -2564,6 +2690,7 @@ local Configs = (function()
 			invShowFull=S.invShowFull, invIncludeCorpse=S.invIncludeCorpse,
 			invMaxAngleDeg=S.invMaxAngleDeg, invMaxDistance=S.invMaxDistance,
 			invShowAttach=S.invShowAttach,
+			objectSearchScope=S.objectSearchScope,
 		}
 	end
 
@@ -2593,7 +2720,7 @@ local Configs = (function()
 
 		S.playerList=t.playerList or false
 		S.groundItemEsp=t.groundItemEsp or false; S.corpseEsp=t.corpseEsp or false
-		S.groundMinValue=t.groundMinValue or 0; S.groundMaxDistance=t.groundMaxDistance or 1500
+		S.groundMinValue=t.groundMinValue or 0
 		S.highValueAlerts=t.highValueAlerts or false; S.highValueAlertMin=t.highValueAlertMin or 10000
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
@@ -2615,6 +2742,7 @@ local Configs = (function()
 		S.invShowFull=t.invShowFull or false; S.invIncludeCorpse=t.invIncludeCorpse or false
 		S.invMaxAngleDeg=t.invMaxAngleDeg or 45; S.invMaxDistance=t.invMaxDistance or 500
 		S.invShowAttach=t.invShowAttach ~= false
+		S.objectSearchScope=t.objectSearchScope or "All Workspace"
 
 		Aimbot.stop()
 		if S.aimEnabled then Aimbot.start() end
@@ -2629,7 +2757,6 @@ local Configs = (function()
 		GroundESP.setGroundItems(S.groundItemEsp)
 		GroundESP.setCorpses(S.corpseEsp)
 		GroundESP.setMinValue(S.groundMinValue)
-		GroundESP.setMaxDistance(S.groundMaxDistance)
 		GroundESP.setAlerts(S.highValueAlerts)
 		GroundESP.setAlertMin(S.highValueAlertMin)
 		PlayerList.setEnabled(S.playerList)
@@ -2841,10 +2968,10 @@ addColorButton("FOV Circle Color", function() return C.AIM_FOV end, function(c)
 end)
 
 -- ============================================================
--- TAB "VISUALS"
+-- TAB "PLAYER ESP"
 -- ============================================================
-createTab("Visuals")
-setTab("Visuals")
+createTab("Player ESP")
+setTab("Player ESP")
 
 addSection("Player Boxes")
 UIControls.espBox = addToggle("Enable", S.espBox, function(on) ESP.setBox(on) end)
@@ -2883,6 +3010,12 @@ addColorButton("Color", function() return C.NPC_TRACER end, function(c) C.NPC_TR
 addSection("NPC Glow")
 UIControls.npcGlow = addToggle("Enable", S.npcGlow, function(on) Glow.setNpcGlow(on) end)
 
+-- ============================================================
+-- TAB "LOOT ESP"
+-- ============================================================
+createTab("Loot ESP")
+setTab("Loot ESP")
+
 addSection("Inventory Viewer")
 UIControls.invEnabled = addToggle("Enable", S.invEnabled, function(on) Inventory.setEnabled(on) end)
 UIControls.invShowName = addToggle("Show Name", S.invShowName, function(on) Inventory.setShowName(on) end)
@@ -2899,7 +3032,6 @@ end)
 addSection("Ground Items ESP")
 UIControls.groundItemEsp = addToggle("Enable", S.groundItemEsp, function(on) GroundESP.setGroundItems(on) end)
 addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP.setMinValue(v) end)
-addSlider("Max Distance", 50, 3000, S.groundMaxDistance, 0, function(v) GroundESP.setMaxDistance(v) end)
 
 addSection("Corpses ESP")
 UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
@@ -2907,6 +3039,84 @@ UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.s
 addSection("High-Value Alerts")
 UIControls.highValueAlerts = addToggle("Enable", S.highValueAlerts, function(on) GroundESP.setAlerts(on) end)
 addSlider("Alert Value", 0, 100000, S.highValueAlertMin, 0, function(v) GroundESP.setAlertMin(v) end)
+
+addSection("Map Object Finder")
+local refreshObjectSearch
+local objectSearchInput = addTextInput("Object name, e.g. MilitaryCrate or RPG-7", "", function()
+	if refreshObjectSearch then refreshObjectSearch() end
+end)
+
+addModeSwitch("Search Scope", {
+	{label="All Workspace", value="All Workspace", color=THEME.accent},
+	{label="Containers", value="Containers", color=THEME.accentAlt},
+	{label="Dropped Items", value="Dropped Items", color=THEME.accentAlt},
+}, function() return S.objectSearchScope end, function(value)
+	S.objectSearchScope = value
+	if refreshObjectSearch then refreshObjectSearch() end
+end)
+
+local objectSearchStatus = Instance.new("TextLabel", getCurrentContainer())
+objectSearchStatus.Size = UDim2.new(1, -6, 0, 34)
+objectSearchStatus.BackgroundColor3 = THEME.card
+objectSearchStatus.BorderSizePixel = 0
+objectSearchStatus.Text = "Enter an object name and press Search. The whole selected map scope is searched."
+objectSearchStatus.TextColor3 = THEME.textDim
+objectSearchStatus.Font = Enum.Font.GothamMedium
+objectSearchStatus.TextSize = 12
+objectSearchStatus.TextXAlignment = Enum.TextXAlignment.Left
+objectSearchStatus.TextWrapped = true
+objectSearchStatus.LayoutOrder = #getCurrentContainer():GetChildren() + 1
+Instance.new("UICorner", objectSearchStatus).CornerRadius = UDim.new(0, 6)
+local objectSearchStatusPadding = Instance.new("UIPadding", objectSearchStatus)
+objectSearchStatusPadding.PaddingLeft = UDim.new(0, 12)
+objectSearchStatusPadding.PaddingRight = UDim.new(0, 12)
+
+refreshObjectSearch = function()
+	for _, child in ipairs(tabs["Loot ESP"]:GetChildren()) do
+		if child:GetAttribute("ObjectSearchRow") then child:Destroy() end
+	end
+	local results, total, errorText = WorldSearch.search(objectSearchInput and objectSearchInput.Text, S.objectSearchScope)
+	if errorText then
+		objectSearchStatus.Text = errorText
+		objectSearchStatus.TextColor3 = THEME.textDim
+		return
+	end
+	objectSearchStatus.Text = string.format("%d match%s in %s — all results shown.", total, total == 1 and "" or "es", S.objectSearchScope)
+	objectSearchStatus.TextColor3 = total > 0 and THEME.success or THEME.textDim
+	for index, result in ipairs(results) do
+		local row = Instance.new("TextButton", tabs["Loot ESP"])
+		row.Size = UDim2.new(1, -6, 0, 34)
+		row.BackgroundColor3 = THEME.card
+		row.BorderSizePixel = 0
+		row.AutoButtonColor = false
+		local distance = result.distance and string.format("  •  %.0f m", result.distance) or ""
+		row.Text = string.format("%s  [%s]%s", result.instance.Name, result.instance.ClassName, distance)
+		row.TextColor3 = THEME.text
+		row.Font = Enum.Font.GothamMedium
+		row.TextSize = 12
+		row.TextXAlignment = Enum.TextXAlignment.Left
+		row.LayoutOrder = 1000 + index
+		row:SetAttribute("ObjectSearchRow", true)
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+		local padding = Instance.new("UIPadding", row)
+		padding.PaddingLeft = UDim.new(0, 12)
+		padding.PaddingRight = UDim.new(0, 12)
+		row.MouseEnter:Connect(function() row.BackgroundColor3 = THEME.cardHover end)
+		row.MouseLeave:Connect(function() row.BackgroundColor3 = THEME.card end)
+		row.MouseButton1Click:Connect(function()
+			WorldSearch.focus(result.instance)
+			objectSearchStatus.Text = "Highlighted: " .. result.instance:GetFullName() .. " (12 seconds)"
+			objectSearchStatus.TextColor3 = THEME.accent
+		end)
+	end
+end
+
+addButton("Search Map", THEME.accent, refreshObjectSearch)
+addButton("Clear Object Highlight", THEME.card, function()
+	WorldSearch.clearFocus()
+	objectSearchStatus.Text = "Object highlight cleared."
+	objectSearchStatus.TextColor3 = THEME.textDim
+end)
 
 -- ============================================================
 -- TAB "PLAYER"
@@ -3018,6 +3228,7 @@ local function destroyHub()
 	Glow.setPlayerGlow(false); Glow.setNpcGlow(false)
 	Footsteps.setEnabled(false)
 	GroundESP.setGroundItems(false); GroundESP.setCorpses(false); GroundESP.setAlerts(false)
+	WorldSearch.clearFocus()
 	PlayerList.setEnabled(false)
 	AdminTools.stopSpectating()
 	World.setFullbright(false); World.setNoFog(false)
@@ -3055,7 +3266,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.playerGlow=false; S.npcGlow=false; S.glowTransparency=0.5
 	S.footsteps=false; S.footstepSize=4
 	S.playerList=false; S.fullbright=false; S.noFog=false
-	S.groundItemEsp=false; S.corpseEsp=false; S.groundMinValue=0; S.groundMaxDistance=1500
+	S.groundItemEsp=false; S.corpseEsp=false; S.groundMinValue=0
 	S.highValueAlerts=false; S.highValueAlertMin=10000
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
@@ -3066,6 +3277,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.invShowName=true; S.invShowValue=true; S.invShowFull=false
 	S.invIncludeCorpse=false; S.invMaxAngleDeg=45; S.invMaxDistance=500
 	S.invShowAttach=true
+	S.objectSearchScope="All Workspace"
 	Aimbot.stop()
 	ESP.stopESP(); ESP.stopSkeleton(); ESP.stopTracer()
 	NPCEsp.stopESP(); NPCEsp.stopSkeleton(); NPCEsp.stopTracer()
@@ -3073,6 +3285,7 @@ addButton("Reset Settings", THEME.danger, function()
 	Footsteps.setEnabled(false)
 	PlayerList.setEnabled(false)
 	GroundESP.setGroundItems(false); GroundESP.setCorpses(false); GroundESP.setAlerts(false)
+	WorldSearch.clearFocus()
 	AdminTools.stopSpectating()
 	World.setFullbright(false); World.setNoFog(false)
 	VM.setVMEnabled(false); VM.setWpnEnabled(false)
