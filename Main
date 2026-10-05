@@ -873,6 +873,7 @@ local Freecam = (function()
 	local self = {}
 	local connection, savedCameraType, savedMouseBehavior, savedMouseIcon
 	local position, yaw, pitch = nil, 0, 0
+	local overlayCallback
 
 	local function stop()
 		if connection then connection:Disconnect(); connection = nil end
@@ -881,6 +882,7 @@ local Freecam = (function()
 		if savedMouseIcon ~= nil then UserInputService.MouseIconEnabled = savedMouseIcon end
 		savedCameraType, savedMouseBehavior, savedMouseIcon = nil, nil, nil
 		S.freeCam = false
+		if overlayCallback then overlayCallback(false) end
 	end
 
 	local function update(dt)
@@ -917,9 +919,11 @@ local Freecam = (function()
 		UserInputService.MouseIconEnabled = false
 		S.freeCam = true
 		connection = RunService.RenderStepped:Connect(update)
+		if overlayCallback then overlayCallback(true) end
 	end
 
 	function self.setSpeed(speed) S.freeCamSpeed = speed end
+	function self.setOverlayCallback(callback) overlayCallback = callback end
 	function self.stop() stop() end
 	return self
 end)()
@@ -1878,7 +1882,7 @@ end)()
 local GroundESP = (function()
 	local self = {}
 	local entries, alerted = {}, {}
-	local lastScan = 0
+	local lastScan, dirty = 0, true
 
 	local function remove(entry)
 		local drawing = entries[entry]
@@ -2007,10 +2011,26 @@ local GroundESP = (function()
 		end
 		for entry in pairs(entries) do if not found[entry] then remove(entry) end end
 		for entry in pairs(alerted) do if not alive[entry] then alerted[entry] = nil end end
+		dirty = false
 	end
 
+	local boundDroppedFolder
+	local function bindDroppedFolder()
+		local folder = Workspace:FindFirstChild("DroppedItems")
+		if folder == boundDroppedFolder then return end
+		boundDroppedFolder = folder; dirty = true
+		if folder then
+			folder.ChildAdded:Connect(function() dirty = true end)
+			folder.ChildRemoved:Connect(function() dirty = true end)
+		end
+	end
+	Workspace.ChildAdded:Connect(bindDroppedFolder)
+	Workspace.ChildRemoved:Connect(bindDroppedFolder)
+	bindDroppedFolder()
+
 	RunService.RenderStepped:Connect(function()
-		if os.clock() - lastScan >= 0.5 then lastScan = os.clock(); scan() end
+		bindDroppedFolder()
+		if dirty or os.clock() - lastScan >= 1.25 then lastScan = os.clock(); scan() end
 		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		for entry, data in pairs(entries) do
 			local pos = entry.Parent and getPosition(entry)
@@ -2339,6 +2359,19 @@ local function setMenuVisible(on)
 end
 
 closeBtn.MouseButton1Click:Connect(function() setMenuVisible(false) end)
+
+local freecamOverlay = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
+freecamOverlay.Name = "DeltaFreecamOverlay"; freecamOverlay.ResetOnSpawn = false; freecamOverlay.Enabled = false
+local freecamStop = Instance.new("TextButton", freecamOverlay)
+freecamStop.Size = UDim2.new(0, 150, 0, 38); freecamStop.Position = UDim2.new(0.5, -75, 0, 18)
+freecamStop.BackgroundColor3 = THEME.danger; freecamStop.Text = "STOP FREECAM"; freecamStop.TextColor3 = Color3.new(1,1,1)
+freecamStop.Font = Enum.Font.GothamBold; freecamStop.TextSize = 13; freecamStop.BorderSizePixel = 0
+Instance.new("UICorner", freecamStop).CornerRadius = UDim.new(0, 8)
+freecamStop.MouseButton1Click:Connect(function() Freecam.stop(); setMenuVisible(true) end)
+Freecam.setOverlayCallback(function(on)
+	freecamOverlay.Enabled = on
+	if on then setMenuVisible(false) end
+end)
 
 local dragging, dragStart, startPos = false, nil, nil
 header.InputBegan:Connect(function(input)
@@ -3256,7 +3289,8 @@ local freeCamTab = createTab("Free Cam")
 setTab("Free Cam")
 
 addSection("Free Fly Camera")
-UIControls.freeCam = addToggle("Enable Freecam", S.freeCam, function(on) Freecam.setEnabled(on) end)
+addButton("Start Freecam", THEME.accent, function() Freecam.setEnabled(true) end)
+addButton("Stop Freecam", THEME.danger, function() Freecam.stop(); setMenuVisible(true) end)
 addSlider("Freecam Speed", 5, 500, S.freeCamSpeed, 0, function(v) Freecam.setSpeed(v) end)
 
 addSection("Player Free Cam")
