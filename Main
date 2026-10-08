@@ -61,6 +61,7 @@ local S = {
 	objectEsp=false, objectAmmo=false, objectWeapons=false, objectMisc=false, objectTools=false,
 	objectMedical=false, objectArmor=false, objectFood=false, objectKeys=false, objectAttachments=false,
 	objectEspDistance=500,
+	objectValuables=false, objectRubles=false,
 
 	freeCam=false, freeCamSpeed=50,
 
@@ -2098,6 +2099,14 @@ end)()
 local ObjectESP = (function()
 	local self = {}
 	local drawings, lastScan = {}, 0
+	-- Exact internal names captured from the local inventory scanner. These are
+	-- intentionally separate from the broad keyword categories below.
+	local priorityValuables = {
+		airfieldtunnelskey=true, bluecard=true, cattoken=true, cranekey=true,
+		dormb203key=true, evackey=true, factorygaragekey=true, fuelingstationkey=true,
+		lighthousekey=true, m4=true, orangecard=true, spsh44=true, swampkey=true,
+		villa1key=true, villagekey=true, keychain=true,
+	}
 	local keywords = {
 		{"medical", {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"}},
 		{"armor", {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"}},
@@ -2115,6 +2124,9 @@ local ObjectESP = (function()
 	end
 
 	local function categoryFor(instance)
+		local exactName = string.lower(instance.Name)
+		if exactName == "rubles" then return "currency" end
+		if priorityValuables[exactName] then return "valuable" end
 		local text = string.lower(instance.Name .. " " .. tostring(instance:GetAttribute("DisplayName") or "") .. " " .. tostring(instance:GetAttribute("ItemType") or ""))
 		for _, rule in ipairs(keywords) do
 			local category, words = rule[1], rule[2]
@@ -2139,16 +2151,18 @@ local ObjectESP = (function()
 			or (category == "medical" and S.objectMedical) or (category == "armor" and S.objectArmor)
 			or (category == "food" and S.objectFood) or (category == "key" and S.objectKeys)
 			or (category == "attachment" and S.objectAttachments)
+			or (category == "valuable" and S.objectValuables)
+			or (category == "currency" and S.objectRubles)
 	end
 
 	local function scan()
-		if not S.objectEsp then
+		if not (S.objectEsp or S.objectValuables or S.objectRubles) then
 			for instance in pairs(drawings) do remove(instance) end
 			return
 		end
 		local found = {}
 		for _, instance in ipairs(Workspace:GetDescendants()) do
-			if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") then
+			if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") or instance:IsA("Folder") then
 				-- A model is labeled once instead of once for every internal part.
 				local parentModel = instance:FindFirstAncestorOfClass("Model")
 				if not (instance:IsA("BasePart") and parentModel) then
@@ -2178,11 +2192,15 @@ local ObjectESP = (function()
 				local point, onScreen = Camera:WorldToViewportPoint(pos)
 				text.Visible = onScreen and point.Z > 0
 				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
-				text.Visible = onScreen and point.Z > 0 and (S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
+				local priority = categoryFor(instance)
+				local unlimited = priority == "valuable" or priority == "currency"
+				text.Visible = onScreen and point.Z > 0 and (unlimited or S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
 				if text.Visible then
 					text.Position = Vector2.new(point.X, point.Y)
-					text.Color = Color3.fromRGB(80, 190, 255)
-					text.Text = string.format("%s | %dm", instance.Name, distance)
+					text.Color = unlimited and C.GROUND_ITEM or Color3.fromRGB(80, 190, 255)
+					local amount = instance:GetAttribute("Amount")
+					local suffix = priority == "currency" and type(amount) == "number" and (" ×" .. math.floor(amount)) or ""
+					text.Text = string.format("%s%s | %dm", instance.Name, suffix, distance)
 				end
 			end
 		end
@@ -2198,6 +2216,8 @@ local ObjectESP = (function()
 		if category == "medical" then S.objectMedical = on elseif category == "armor" then S.objectArmor = on
 		elseif category == "food" then S.objectFood = on elseif category == "key" then S.objectKeys = on
 		elseif category == "attachment" then S.objectAttachments = on end
+		if category == "valuable" then S.objectValuables = on
+		elseif category == "currency" then S.objectRubles = on end
 		scan()
 	end
 	function self.setDistance(value) S.objectEspDistance = value end
@@ -3083,6 +3103,7 @@ local Configs = (function()
 			highValueAlerts=S.highValueAlerts, highValueAlertMin=S.highValueAlertMin,
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
 			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
+			objectValuables=S.objectValuables, objectRubles=S.objectRubles,
 			freeCamSpeed=S.freeCamSpeed,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -3145,6 +3166,7 @@ local Configs = (function()
 		S.objectAmmo=valueOf(t, "objectAmmo", false); S.objectWeapons=valueOf(t, "objectWeapons", false)
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
 		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
+		S.objectValuables=valueOf(t, "objectValuables", false); S.objectRubles=valueOf(t, "objectRubles", false)
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
@@ -3196,6 +3218,7 @@ local Configs = (function()
 		ObjectESP.setCategory("ammo", S.objectAmmo); ObjectESP.setCategory("weapon", S.objectWeapons)
 		ObjectESP.setCategory("misc", S.objectMisc); ObjectESP.setCategory("tool", S.objectTools)
 		ObjectESP.setCategory("medical", S.objectMedical); ObjectESP.setCategory("armor", S.objectArmor); ObjectESP.setCategory("food", S.objectFood); ObjectESP.setCategory("key", S.objectKeys); ObjectESP.setCategory("attachment", S.objectAttachments); ObjectESP.setDistance(S.objectEspDistance)
+		ObjectESP.setCategory("valuable", S.objectValuables); ObjectESP.setCategory("currency", S.objectRubles)
 		PlayerList.setEnabled(S.playerList)
 		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
 		Footsteps.setEnabled(S.footsteps)
@@ -3507,6 +3530,10 @@ UIControls.objectKeys = addToggle("Keys & Cards", S.objectKeys, function(on) Obj
 UIControls.objectAttachments = addToggle("Attachments", S.objectAttachments, function(on) ObjectESP.setCategory("attachment", on) end)
 addSlider("ESP Distance (0 = Unlimited)", 0, 5000, S.objectEspDistance, 0, function(v) ObjectESP.setDistance(v) end)
 
+addSection("Priority Valuable ESP")
+UIControls.objectValuables = addToggle("Exact Valuable Items", S.objectValuables, function(on) ObjectESP.setCategory("valuable", on) end)
+UIControls.objectRubles = addToggle("Rubles (Any Amount)", S.objectRubles, function(on) ObjectESP.setCategory("currency", on) end)
+
 addSection("Corpses ESP")
 UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
 
@@ -3768,6 +3795,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.groundItemEsp=false; S.corpseEsp=false; S.containerContentsEsp=false; S.groundMinValue=0
 	S.highValueAlerts=false; S.highValueAlertMin=10000
 	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false
+	S.objectValuables=false; S.objectRubles=false
 	S.freeCam=false; S.freeCamSpeed=50
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
