@@ -1919,36 +1919,65 @@ local GroundESP = (function()
 		entries[entry] = {text = text, kind = kind, name = name, value = value}
 	end
 
+	local containerWords = {
+		"crate", "chest", "box", "bag", "cache", "container", "stash", "storage",
+		"locker", "safe", "case", "register", "barrel", "supply", "loot",
+	}
+
+	local function hasContainerMarker(node)
+		if node:GetAttribute("CanSpawnLoot") or node:GetAttribute("LootContainer")
+			or node:GetAttribute("IsContainer") or node:GetAttribute("Container") then
+			return true
+		end
+		local name = string.lower(node.Name)
+		for _, word in ipairs(containerWords) do
+			if string.find(name, word, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function isCharacterInventory(inventory)
+		local model = inventory:FindFirstAncestorOfClass("Model")
+		if not model then return false end
+		return Players:GetPlayerFromCharacter(model) ~= nil or Inventory.isCorpse(model)
+	end
+
 	local function getContainerRoot(inventory)
-		local node = inventory.Parent
+		if isCharacterInventory(inventory) then return nil end
+		local fallback, node = nil, inventory.Parent
 		while node and node ~= Workspace do
-			local name = string.lower(node.Name)
-			if node:GetAttribute("CanSpawnLoot") or node:GetAttribute("DisplayName")
-				or string.find(name, "crate", 1, true) or string.find(name, "box", 1, true)
-				or string.find(name, "bag", 1, true) or string.find(name, "cache", 1, true)
-				or string.find(name, "container", 1, true) then
-				return node
+			-- A model or part with an inventory is a valid physical container even
+			-- when its creator used an arbitrary name. Prefer explicit markers.
+			if getPosition(node) then
+				if not fallback and (node:IsA("Model") or node:IsA("BasePart")) then fallback = node end
+				if hasContainerMarker(node) then return node end
 			end
 			node = node.Parent
 		end
-		return nil
+		return fallback
 	end
 
 	local function getContainerSummary(inventory)
-		local counts = {}
+		local counts, total = {}, 0
 		for _, item in ipairs(inventory:GetChildren()) do
-			counts[item.Name] = (counts[item.Name] or 0) + 1
+			local value = Inventory.getItemValue(item)
+			-- Folders such as Attachments are metadata, not loot entries.
+			if value > 0 then
+				local amount = item:GetAttribute("Amount")
+				counts[item.Name] = (counts[item.Name] or 0) + (type(amount) == "number" and amount or 1)
+				total = total + value
+			end
 		end
 		local names = {}
 		for name, amount in pairs(counts) do
 			table.insert(names, amount > 1 and (name .. " ×" .. amount) or name)
 		end
 		table.sort(names)
-		if #names == 0 then return nil end
+		if #names == 0 then return nil, 0 end
 		local shown = {}
 		for i = 1, math.min(#names, 4) do table.insert(shown, names[i]) end
 		if #names > 4 then table.insert(shown, "+" .. (#names - 4) .. " more") end
-		return table.concat(shown, ", ")
+		return table.concat(shown, ", "), total
 	end
 
 	local function notify(entry, name, value)
@@ -1996,14 +2025,19 @@ local GroundESP = (function()
 		end
 		if S.containerContentsEsp then
 			for _, inventory in ipairs(Workspace:GetDescendants()) do
-				if inventory:IsA("Folder") and inventory.Name == "Inventory" then
+				if (inventory:IsA("Folder") or inventory:IsA("Configuration"))
+					and string.lower(inventory.Name) == "inventory" then
 					local container = getContainerRoot(inventory)
-					local summary = container and getContainerSummary(inventory)
+					local summary, value = container and getContainerSummary(inventory)
 					if container and summary and getPosition(container) then
-						alive[container] = true; found[container] = true
-						local label = (container:GetAttribute("DisplayName") or container.Name) .. "\n" .. summary
-						if not entries[container] then add(container, "container", label, 0) end
-						entries[container].name = label
+						alive[container] = true
+						notify(container, container:GetAttribute("DisplayName") or container.Name, value)
+						if value >= S.groundMinValue then
+							found[container] = true
+							local label = (container:GetAttribute("DisplayName") or container.Name) .. "\n" .. summary
+							if not entries[container] then add(container, "container", label, value) end
+							entries[container].name, entries[container].value = label, value
+						end
 					end
 				end
 			end
@@ -2042,7 +2076,7 @@ local GroundESP = (function()
 				data.text.Position = Vector2.new(point.X, point.Y)
 				data.text.Color = data.kind == "corpse" and C.CORPSE or (data.kind == "container" and C.CONTAINER or C.GROUND_ITEM)
 				if data.kind == "container" then
-					data.text.Text = string.format("%s\n[%dm]", data.name, distance)
+					data.text.Text = string.format("%s\n$%d | %dm", data.name, math.floor(data.value), distance)
 				else
 					data.text.Text = string.format("%s | $%d | %dm", data.name, math.floor(data.value), distance)
 				end
@@ -2371,7 +2405,6 @@ Instance.new("UICorner", freecamStop).CornerRadius = UDim.new(0, 8)
 freecamStop.MouseButton1Click:Connect(function() Freecam.stop(); setMenuVisible(true) end)
 Freecam.setOverlayCallback(function(on)
 	freecamOverlay.Enabled = on
-	if on then setMenuVisible(false) end
 end)
 
 local dragging, dragStart, startPos = false, nil, nil
@@ -3253,7 +3286,10 @@ local freeCamTab = createTab("Free Cam")
 setTab("Free Cam")
 
 addSection("Free Fly Camera")
-addButton("Start Freecam", THEME.accent, function() Freecam.setEnabled(true) end)
+addButton("Start Freecam", THEME.accent, function()
+	setMenuVisible(false)
+	Freecam.setEnabled(true)
+end)
 addButton("Stop Freecam", THEME.danger, function() Freecam.stop(); setMenuVisible(true) end)
 addSlider("Freecam Speed", 5, 500, S.freeCamSpeed, 0, function(v) Freecam.setSpeed(v) end)
 
@@ -3455,6 +3491,8 @@ addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP
 
 addSection("Container Contents ESP")
 UIControls.containerContentsEsp = addToggle("Show Contents", S.containerContentsEsp, function(on) GroundESP.setContainerContents(on) end)
+-- Uses the Ground Items "Minimum Value" threshold above, so both loot sources
+-- are filtered by the same value model.
 
 addSection("Map Object ESP")
 UIControls.objectEsp = addToggle("Enable Object ESP", S.objectEsp, function(on) ObjectESP.setEnabled(on) end)
