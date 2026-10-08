@@ -81,7 +81,7 @@ local S = {
 	invShowName=true, invShowValue=true, invShowFull=false,
 	invIncludeCorpse=false, invMaxAngleDeg=45, invMaxDistance=500,
 	invShowAttach=true,
-	objectSearchScope="All Workspace",
+	objectSearchScope="All Loot",
 	objectSearchMarker="Name",
 }
 
@@ -2291,9 +2291,9 @@ local WorldSearch = (function()
 		return part and part.Position or nil
 	end
 
-	local function matches(instance, query)
-		local name = string.lower(instance.Name)
-		local displayName = string.lower(tostring(instance:GetAttribute("DisplayName") or ""))
+	local function matchesName(name, displayName, query)
+		name = string.lower(name or "")
+		displayName = string.lower(displayName or "")
 		for word in string.gmatch(string.lower(query), "%S+") do
 			if not string.find(name, word, 1, true) and not string.find(displayName, word, 1, true) then
 				return false
@@ -2302,26 +2302,79 @@ local WorldSearch = (function()
 		return true
 	end
 
+	local function inventoryAnchor(inventory)
+		local model = inventory:FindFirstAncestorOfClass("Model")
+		local player = model and Players:GetPlayerFromCharacter(model)
+		if player then
+			return model:FindFirstChild("HumanoidRootPart"), "Player: " .. player.Name, "Players"
+		end
+		local node = inventory.Parent
+		while node and node ~= Workspace do
+			if node:IsA("Model") or node:IsA("BasePart") then
+				if getPosition(node) then return node, node:GetAttribute("DisplayName") or node.Name, "Containers" end
+			end
+			node = node.Parent
+		end
+		return nil, nil, nil
+	end
+
+	-- Searches actual loot entries, including player inventories and every
+	-- replicated map-container inventory. The result anchors to its owner so a
+	-- name/tracer can point to a physical world position.
 	function self.search(query, scope)
 		query = tostring(query or ""):gsub("^%s*(.-)%s*$", "%1")
-		if query == "" then return {}, 0, "Enter an object name to search." end
-		local root = getRoot(scope)
-		if not root then return {}, 0, "The selected map folder is not replicated." end
+		if query == "" then return {}, 0, "Enter a loot name to search." end
 
 		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-		local results, count = {}, 0
-		for _, instance in ipairs(root:GetDescendants()) do
-			if (instance:IsA("Model") or instance:IsA("BasePart")) and matches(instance, query) then
-				count = count + 1
-				local position = getPosition(instance)
-				local distance = myRoot and position and (myRoot.Position - position).Magnitude * 0.28 or nil
-				table.insert(results, {instance=instance, distance=distance})
+		local results, seen = {}, {}
+		local function add(itemName, displayName, anchor, location, category)
+			if not anchor or not getPosition(anchor) or not matchesName(itemName, displayName, query) then return end
+			if scope ~= "All Loot" and scope ~= category then return end
+			local key = tostring(anchor) .. "|" .. itemName
+			if seen[key] then return end
+			seen[key] = true
+			local position = getPosition(anchor)
+			local distance = myRoot and (myRoot.Position - position).Magnitude * 0.28 or nil
+			table.insert(results, {instance=anchor, lootName=itemName, location=location, distance=distance})
+		end
+
+		for _, inventory in ipairs(Workspace:GetDescendants()) do
+			if (inventory:IsA("Folder") or inventory:IsA("Configuration")) and string.lower(inventory.Name) == "inventory" then
+				local anchor, location, category = inventoryAnchor(inventory)
+				for _, item in ipairs(inventory:GetChildren()) do
+					add(item.Name, item:GetAttribute("DisplayName"), anchor, location, category)
+				end
+			end
+		end
+		if scope == "All Loot" or scope == "Players" then
+			local records = ReplicatedStorage:FindFirstChild("Players")
+			if records then
+				for _, player in ipairs(Players:GetPlayers()) do
+					local record = records:FindFirstChild(player.Name)
+					local inventory = record and record:FindFirstChild("Inventory")
+					local anchor = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+					if inventory then
+						for _, item in ipairs(inventory:GetChildren()) do
+							add(item.Name, item:GetAttribute("DisplayName"), anchor, "Player: " .. player.Name, "Players")
+						end
+					end
+				end
+			end
+		end
+		if scope == "All Loot" or scope == "Dropped Items" then
+			local dropped = Workspace:FindFirstChild("DroppedItems")
+			if dropped then
+				for _, instance in ipairs(dropped:GetDescendants()) do
+					if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") then
+						add(instance.Name, instance:GetAttribute("DisplayName"), instance, "Dropped Items", "Dropped Items")
+					end
+				end
 			end
 		end
 		table.sort(results, function(a, b)
 			return (a.distance or math.huge) < (b.distance or math.huge)
 		end)
-		return results, count, nil
+		return results, #results, nil
 	end
 
 	local function clearMarker()
@@ -3283,7 +3336,8 @@ local Configs = (function()
 		S.invShowFull=t.invShowFull or false; S.invIncludeCorpse=t.invIncludeCorpse or false
 		S.invMaxAngleDeg=t.invMaxAngleDeg or 45; S.invMaxDistance=t.invMaxDistance or 500
 		S.invShowAttach=t.invShowAttach ~= false
-		S.objectSearchScope=t.objectSearchScope or "All Workspace"
+		S.objectSearchScope=t.objectSearchScope or "All Loot"
+		if S.objectSearchScope == "All Workspace" then S.objectSearchScope = "All Loot" end
 		S.objectSearchMarker=t.objectSearchMarker or "Name"
 
 		Aimbot.stop()
@@ -3709,14 +3763,15 @@ addSlider("Alert Value", 0, 100000, S.highValueAlertMin, 0, function(v) GroundES
 
 addSection("Map Object Finder")
 local refreshObjectSearch
-local objectSearchInput = addTextInput("Object name, e.g. MilitaryCrate or RPG-7", "", function()
+local objectSearchInput = addTextInput("Loot name, e.g. GoldWatch or M4", "", function()
 	if refreshObjectSearch then refreshObjectSearch() end
 end)
 
 addModeSwitch("Search Scope", {
-	{label="All Workspace", value="All Workspace", color=THEME.accent},
+	{label="All Loot", value="All Loot", color=THEME.accent},
 	{label="Containers", value="Containers", color=THEME.accentAlt},
 	{label="Dropped Items", value="Dropped Items", color=THEME.accentAlt},
+	{label="Players", value="Players", color=THEME.accentAlt},
 }, function() return S.objectSearchScope end, function(value)
 	S.objectSearchScope = value
 	if refreshObjectSearch then refreshObjectSearch() end
@@ -3733,7 +3788,7 @@ local objectSearchStatus = Instance.new("TextLabel", getCurrentContainer())
 objectSearchStatus.Size = UDim2.new(1, -6, 0, 34)
 objectSearchStatus.BackgroundColor3 = THEME.card
 objectSearchStatus.BorderSizePixel = 0
-objectSearchStatus.Text = "Enter an object name and press Search. The whole selected map scope is searched."
+objectSearchStatus.Text = "Searches loot by exact/partial name in players, containers and dropped items."
 objectSearchStatus.TextColor3 = THEME.textDim
 objectSearchStatus.Font = Enum.Font.GothamMedium
 objectSearchStatus.TextSize = 12
@@ -3780,7 +3835,7 @@ refreshObjectSearch = function()
 		row.BorderSizePixel = 0
 		row.AutoButtonColor = false
 		local distance = result.distance and string.format("  •  %.0f m", result.distance) or ""
-		row.Text = string.format("%s\n[%s]%s", result.instance.Name, result.instance.ClassName, distance)
+		row.Text = string.format("%s\n%s%s", result.lootName or result.instance.Name, result.location or result.instance.ClassName, distance)
 		row.TextColor3 = THEME.text
 		row.Font = Enum.Font.GothamMedium
 		row.TextSize = 12
@@ -3951,7 +4006,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.invShowName=true; S.invShowValue=true; S.invShowFull=false
 	S.invIncludeCorpse=false; S.invMaxAngleDeg=45; S.invMaxDistance=500
 	S.invShowAttach=true
-	S.objectSearchScope="All Workspace"
+	S.objectSearchScope="All Loot"
 	S.objectSearchMarker="Name"
 	Aimbot.stop()
 	ESP.stopESP(); ESP.stopSkeleton(); ESP.stopTracer()
