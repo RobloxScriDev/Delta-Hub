@@ -56,13 +56,11 @@ local S = {
 	footsteps=false, footstepSize=4,
 
 	playerList=false,
-	groundItemEsp=false, corpseEsp=false, containerContentsEsp=false, groundMinValue=0,
-	highValueAlerts=false, highValueAlertMin=10000,
+	groundItemEsp=false, corpseEsp=false, containerContentsEsp=true, groundMinValue=0,
 	objectEsp=false, objectAmmo=false, objectWeapons=false, objectMisc=false, objectTools=false,
 	objectMedical=false, objectArmor=false, objectFood=false, objectKeys=false, objectAttachments=false,
 	objectEspDistance=500,
-	objectValuables=false, objectRubles=false,
-	priorityItemEnabled={},
+	objectRubles=false,
 
 	freeCam=false, freeCamSpeed=50,
 
@@ -78,26 +76,24 @@ local S = {
 	wpnEnabled=false, wpnTransparency=0, wpnColor=Color3.new(1,1,1),
 
 	invEnabled=false, invKey=Enum.KeyCode.X,
-	invShowName=true, invShowValue=true, invShowFull=false,
-	invIncludeCorpse=false, invMaxAngleDeg=45, invMaxDistance=500,
+	invShowName=true, invShowValue=true, invShowFull=true,
+	invIncludeCorpse=true, invMaxAngleDeg=30, invMaxDistance=1000000000,
 	invShowAttach=true,
 	objectSearchScope="All Loot",
 	objectSearchMarker="Name",
 }
 
--- Exact internal names confirmed from the local inventory scanners. Each item
--- defaults to enabled and can be disabled individually in Loot ESP.
-local PRIORITY_ITEMS = {
+-- Exact internal names confirmed by the inventory scan.  These are always
+-- shown by the unified loot ESP, even when the game has no price metadata.
+local TRACKED_LOOT = {
 	"AirfieldTunnelsKey", "BlueCard", "CatToken", "CraneKey", "DormB203Key", "EVACKey",
 	"FactoryGarageKey", "FuelingStationKey", "LighthouseKey", "M4", "OrangeCard", "SPSh44",
 	"SwampKey", "Villa1Key", "VillageKey", "KeyChain",
-	"AA2", "ADAR15", "Altyn", "Beans", "Cologne", "DeniCard", "GoldWatch", "GoldenTicket",
-	"Matryoshka", "MaxEnergy", "SerumGreen", "SerumYellow", "Smartphone", "Smersh", "SolterStatue",
 }
-local PRIORITY_VALUABLES = {}
-for _, name in ipairs(PRIORITY_ITEMS) do PRIORITY_VALUABLES[string.lower(name)] = true end
-local function isPriorityItemEnabled(name)
-	return PRIORITY_VALUABLES[name] and S.priorityItemEnabled[name] ~= false
+local TRACKED_LOOT_NAMES = {}
+for _, name in ipairs(TRACKED_LOOT) do TRACKED_LOOT_NAMES[string.lower(name)] = true end
+local function isTrackedLoot(name)
+	return TRACKED_LOOT_NAMES[string.lower(name)] == true
 end
 
 local isHolding        = false
@@ -1891,14 +1887,14 @@ Inventory = (function()
 		render(findTarget())
 	end)
 
-	function self.setEnabled(on) S.invEnabled = on; if not on then root.Visible = false end end
-	function self.setShowName(on) S.invShowName = on end
-	function self.setShowValue(on) S.invShowValue = on end
-	function self.setShowAttach(on) S.invShowAttach = on end
-	function self.setShowFull(on) S.invShowFull = on end
-	function self.setIncludeCorpse(on) S.invIncludeCorpse = on end
-	function self.setMaxAngle(v) S.invMaxAngleDeg = v end
-	function self.setMaxDistance(v) S.invMaxDistance = v end
+	function self.setEnabled(on)
+		S.invEnabled = on
+		-- The viewer has one predictable, complete mode.
+		S.invShowName, S.invShowValue, S.invShowFull = true, true, true
+		S.invIncludeCorpse, S.invShowAttach = true, true
+		S.invMaxAngleDeg, S.invMaxDistance = 30, 1000000000
+		if not on then root.Visible = false end
+	end
 	function self.setPinnedPlayer(player) pinnedPlayer = player end
 	function self.getItemValue(item) return getItemValue(item) end
 	function self.getTotalValue(target) return getTotalValue(target) end
@@ -1911,7 +1907,7 @@ end)()
 -- ============================================================
 local GroundESP = (function()
 	local self = {}
-	local entries, alerted = {}, {}
+	local entries = {}
 	local lastScan, dirty = 0, true
 
 	local function remove(entry)
@@ -1920,7 +1916,6 @@ local GroundESP = (function()
 			drawing.text:Remove()
 			entries[entry] = nil
 		end
-		alerted[entry] = nil
 	end
 
 	local function getPosition(entry)
@@ -1968,14 +1963,11 @@ local GroundESP = (function()
 		return false
 	end
 
-	local function isCharacterInventory(inventory)
-		local model = inventory:FindFirstAncestorOfClass("Model")
-		if not model then return false end
-		return Players:GetPlayerFromCharacter(model) ~= nil or Inventory.isCorpse(model)
-	end
-
 	local function getContainerRoot(inventory)
-		if isCharacterInventory(inventory) then return nil end
+		local character = inventory:FindFirstAncestorOfClass("Model")
+		if character and (Players:GetPlayerFromCharacter(character) or Inventory.isCorpse(character)) then
+			return character
+		end
 		local fallback, node = nil, inventory.Parent
 		while node and node ~= Workspace do
 			-- A model or part with an inventory is a valid physical container even
@@ -1993,8 +1985,8 @@ local GroundESP = (function()
 		local counts, total = {}, 0
 		for _, item in ipairs(inventory:GetChildren()) do
 			local value = Inventory.getItemValue(item)
-			-- Folders such as Attachments are metadata, not loot entries.
-			if value > 0 then
+			-- Include the exact tracked items even if this client has no price data.
+			if isTrackedLoot(item.Name) or (value > 0 and value >= S.groundMinValue) then
 				local amount = item:GetAttribute("Amount")
 				counts[item.Name] = (counts[item.Name] or 0) + (type(amount) == "number" and amount or 1)
 				total = total + value
@@ -2012,38 +2004,8 @@ local GroundESP = (function()
 		return table.concat(shown, ", "), total
 	end
 
-	local function getPriorityContainerSummary(inventory)
-		local counts = {}
-		for _, item in ipairs(inventory:GetChildren()) do
-			local name = string.lower(item.Name)
-			if (isPriorityItemEnabled(name) and S.objectValuables) or (name == "rubles" and S.objectRubles) then
-				local amount = item:GetAttribute("Amount")
-				counts[item.Name] = (counts[item.Name] or 0) + (type(amount) == "number" and amount or 1)
-			end
-		end
-		local names = {}
-		for name, amount in pairs(counts) do
-			table.insert(names, name == "Rubles" and (name .. " ×" .. amount) or (amount > 1 and (name .. " ×" .. amount) or name))
-		end
-		table.sort(names)
-		if #names == 0 then return nil end
-		return table.concat(names, ", ")
-	end
-
-	local function notify(entry, name, value)
-		if not S.highValueAlerts or value < S.highValueAlertMin or alerted[entry] then return end
-		alerted[entry] = true
-		pcall(function()
-			game:GetService("StarterGui"):SetCore("SendNotification", {
-				Title = "RobloxScriDev Delta HUB",
-				Text = string.format("High-value item: %s ($%d)", name, math.floor(value)),
-				Duration = 5,
-			})
-		end)
-	end
-
 	local function scan()
-		if not (S.groundItemEsp or S.corpseEsp or S.containerContentsEsp or S.highValueAlerts or S.objectValuables or S.objectRubles) then
+		if not (S.groundItemEsp or S.corpseEsp) then
 			for entry in pairs(entries) do remove(entry) end
 			return
 		end
@@ -2063,8 +2025,7 @@ local GroundESP = (function()
 						end
 					else
 						local name, value = getGroundValue(entry)
-						notify(entry, name or entry.Name, value)
-						if S.groundItemEsp and value >= S.groundMinValue then
+						if S.groundItemEsp and (isTrackedLoot(name or entry.Name) or (value > 0 and value >= S.groundMinValue)) then
 							found[entry] = true
 							if not entries[entry] then add(entry, "item", name or entry.Name, value) end
 							entries[entry].name, entries[entry].value = name or entry.Name, value
@@ -2073,30 +2034,49 @@ local GroundESP = (function()
 				end
 			end
 		end
-		if S.containerContentsEsp or S.objectValuables or S.objectRubles then
+		if S.groundItemEsp then
 			for _, inventory in ipairs(Workspace:GetDescendants()) do
 				if (inventory:IsA("Folder") or inventory:IsA("Configuration"))
 					and string.lower(inventory.Name) == "inventory" then
 					local container = getContainerRoot(inventory)
 					local summary, value = container and getContainerSummary(inventory)
-					local prioritySummary = container and getPriorityContainerSummary(inventory)
-					local showContents = S.containerContentsEsp and summary and value >= S.groundMinValue
-					local showPriority = prioritySummary ~= nil
-					if container and (showContents or showPriority) and getPosition(container) then
+					if container and summary and getPosition(container) then
 						alive[container] = true
-						notify(container, container:GetAttribute("DisplayName") or container.Name, value)
 						found[container] = true
 						local label = container:GetAttribute("DisplayName") or container.Name
-						if showPriority then label = label .. "\n★ " .. prioritySummary end
-						if showContents then label = label .. "\n" .. summary end
+						local player = Players:GetPlayerFromCharacter(container)
+						if player then label = player.Name end
+						label = label .. "\n" .. summary
 						if not entries[container] then add(container, "container", label, value or 0) end
 						entries[container].name, entries[container].value = label, value or 0
 					end
 				end
 			end
 		end
+		-- In this game, player inventories are replicated under ReplicatedStorage
+		-- rather than necessarily below the character model. Anchor them to the
+		-- character so valuable loot on people is visible in the world as well.
+		if S.groundItemEsp then
+			local records = ReplicatedStorage:FindFirstChild("Players")
+			if records then
+				for _, player in ipairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer then
+						local inventory = records:FindFirstChild(player.Name)
+							and records[player.Name]:FindFirstChild("Inventory")
+						local character = player.Character
+						local summary, value = inventory and getContainerSummary(inventory)
+						if character and summary and getPosition(character) then
+							alive[character] = true
+							found[character] = true
+							local label = player.Name .. "\n" .. summary
+							if not entries[character] then add(character, "container", label, value) end
+							entries[character].kind, entries[character].name, entries[character].value = "container", label, value
+						end
+					end
+				end
+			end
+		end
 		for entry in pairs(entries) do if not found[entry] then remove(entry) end end
-		for entry in pairs(alerted) do if not alive[entry] then alerted[entry] = nil end end
 		dirty = false
 	end
 
@@ -2141,10 +2121,7 @@ local GroundESP = (function()
 
 	function self.setGroundItems(on) S.groundItemEsp = on; scan() end
 	function self.setCorpses(on) S.corpseEsp = on; scan() end
-	function self.setContainerContents(on) S.containerContentsEsp = on; scan() end
 	function self.setMinValue(value) S.groundMinValue = value; scan() end
-	function self.setAlerts(on) S.highValueAlerts = on; scan() end
-	function self.setAlertMin(value) S.highValueAlertMin = value end
 	function self.refresh() dirty = true; scan() end
 
 	return self
@@ -2173,7 +2150,6 @@ local ObjectESP = (function()
 	local function categoryFor(instance)
 		local exactName = string.lower(instance.Name)
 		if exactName == "rubles" then return "currency" end
-		if isPriorityItemEnabled(exactName) then return "valuable" end
 		local text = string.lower(instance.Name .. " " .. tostring(instance:GetAttribute("DisplayName") or "") .. " " .. tostring(instance:GetAttribute("ItemType") or ""))
 		for _, rule in ipairs(keywords) do
 			local category, words = rule[1], rule[2]
@@ -2198,18 +2174,17 @@ local ObjectESP = (function()
 			or (category == "medical" and S.objectMedical) or (category == "armor" and S.objectArmor)
 			or (category == "food" and S.objectFood) or (category == "key" and S.objectKeys)
 			or (category == "attachment" and S.objectAttachments)
-			or (category == "valuable" and S.objectValuables)
 			or (category == "currency" and S.objectRubles)
 	end
 
 	local function scan()
-		if not (S.objectEsp or S.objectValuables or S.objectRubles) then
+		if not (S.objectEsp or S.objectRubles) then
 			for instance in pairs(drawings) do remove(instance) end
 			return
 		end
 		local found = {}
 		for _, instance in ipairs(Workspace:GetDescendants()) do
-			if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") or instance:IsA("Folder") then
+			if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") then
 				-- A model is labeled once instead of once for every internal part.
 				local parentModel = instance:FindFirstAncestorOfClass("Model")
 				if not (instance:IsA("BasePart") and parentModel) then
@@ -2240,11 +2215,10 @@ local ObjectESP = (function()
 				text.Visible = onScreen and point.Z > 0
 				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
 				local priority = categoryFor(instance)
-				local unlimited = priority == "valuable" or priority == "currency"
-				text.Visible = onScreen and point.Z > 0 and (unlimited or S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
+				text.Visible = onScreen and point.Z > 0 and (S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
 				if text.Visible then
 					text.Position = Vector2.new(point.X, point.Y)
-					text.Color = unlimited and C.GROUND_ITEM or Color3.fromRGB(80, 190, 255)
+					text.Color = priority == "currency" and C.GROUND_ITEM or Color3.fromRGB(80, 190, 255)
 					local amount = instance:GetAttribute("Amount")
 					local suffix = priority == "currency" and type(amount) == "number" and (" ×" .. math.floor(amount)) or ""
 					text.Text = string.format("%s%s | %dm", instance.Name, suffix, distance)
@@ -2263,9 +2237,7 @@ local ObjectESP = (function()
 		if category == "medical" then S.objectMedical = on elseif category == "armor" then S.objectArmor = on
 		elseif category == "food" then S.objectFood = on elseif category == "key" then S.objectKeys = on
 		elseif category == "attachment" then S.objectAttachments = on end
-		if category == "valuable" then S.objectValuables = on
-		elseif category == "currency" then S.objectRubles = on end
-		GroundESP.refresh()
+		if category == "currency" then S.objectRubles = on end
 		scan()
 	end
 	function self.setDistance(value) S.objectEspDistance = value end
@@ -2910,6 +2882,10 @@ local function addKeyBind(label, getKeyName, onPicked)
 			return true
 		end
 	end)
+	return {Set = function()
+		valLbl.Text = getKeyName()
+		btn.Text = "Set"
+	end}
 end
 
 -- HSV PICKER
@@ -3119,7 +3095,7 @@ local function addColorButton(label, getColor, callback)
 		end)
 	end)
 
-	return swatch
+	return {Set=function(color) swatch.BackgroundColor3 = color end}
 end
 
 local function addModeSwitch(label, options, getCurrent, onPick)
@@ -3144,31 +3120,38 @@ local function addModeSwitch(label, options, getCurrent, onPick)
 	btn.TextSize = 12; btn.BorderSizePixel = 0; btn.AutoButtonColor = false
 	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
 
-	btn.MouseButton1Click:Connect(function()
-		local cur = getCurrent()
-		local idx = 1
-		for i, opt in ipairs(options) do
-			if opt.value == cur then idx = i; break end
+	local function paint(value)
+		for _, opt in ipairs(options) do
+			if opt.value == value then
+				btn.Text = opt.label
+				btn.BackgroundColor3 = opt.color or THEME.accent
+				return
+			end
 		end
-		idx = idx + 1
-		if idx > #options then idx = 1 end
+		btn.Text = tostring(value)
+	end
+	btn.MouseButton1Click:Connect(function()
+		local cur, idx = getCurrent(), 1
+		for i, opt in ipairs(options) do if opt.value == cur then idx = i; break end end
+		idx = (idx % #options) + 1
 		local picked = options[idx]
 		btn.Text = picked.label
 		btn.BackgroundColor3 = picked.color or THEME.accent
 		onPick(picked.value)
 	end)
-
-	return btn
+	return {Set = function(value) paint(value) end}
 end
 
 -- CONFIGS
 local HttpService = game:GetService("HttpService")
 local UIControls = {}
-local refreshPriorityItemUI = function() end
-
+local ColorControls = {}
 local function syncToggleControls()
 	for setting, control in pairs(UIControls) do
 		if control and control.Set then control:Set(S[setting], false) end
+	end
+	for name, control in pairs(ColorControls) do
+		if control and control.Set and C[name] then control:Set(C[name]) end
 	end
 end
 
@@ -3230,13 +3213,11 @@ local Configs = (function()
 			playerGlow=S.playerGlow, npcGlow=S.npcGlow, glowTransparency=S.glowTransparency,
 			footsteps=S.footsteps, footstepSize=S.footstepSize,
 			playerList=S.playerList,
-			groundItemEsp=S.groundItemEsp, corpseEsp=S.corpseEsp, containerContentsEsp=S.containerContentsEsp,
+			groundItemEsp=S.groundItemEsp, corpseEsp=S.corpseEsp,
 			groundMinValue=S.groundMinValue,
-			highValueAlerts=S.highValueAlerts, highValueAlertMin=S.highValueAlertMin,
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
 			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
-			objectValuables=S.objectValuables, objectRubles=S.objectRubles,
-			priorityItemEnabled=S.priorityItemEnabled,
+			objectRubles=S.objectRubles,
 			freeCamSpeed=S.freeCamSpeed,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -3247,10 +3228,6 @@ local Configs = (function()
 			wpnEnabled=S.wpnEnabled, wpnTransparency=S.wpnTransparency,
 			wpnColorR=S.wpnColor.R, wpnColorG=S.wpnColor.G, wpnColorB=S.wpnColor.B,
 			invEnabled=S.invEnabled, invKeyName=S.invKey.Name,
-			invShowName=S.invShowName, invShowValue=S.invShowValue,
-			invShowFull=S.invShowFull, invIncludeCorpse=S.invIncludeCorpse,
-			invMaxAngleDeg=S.invMaxAngleDeg, invMaxDistance=S.invMaxDistance,
-			invShowAttach=S.invShowAttach,
 			objectSearchScope=S.objectSearchScope,
 			objectSearchMarker=S.objectSearchMarker,
 			colors={
@@ -3293,20 +3270,13 @@ local Configs = (function()
 
 		S.playerList=t.playerList or false
 		S.groundItemEsp=t.groundItemEsp or false; S.corpseEsp=t.corpseEsp or false
-		S.containerContentsEsp=valueOf(t, "containerContentsEsp", false)
+		S.containerContentsEsp=true
 		S.groundMinValue=t.groundMinValue or 0
-		S.highValueAlerts=valueOf(t, "highValueAlerts", false); S.highValueAlertMin=valueOf(t, "highValueAlertMin", 10000)
 		S.objectEsp=valueOf(t, "objectEsp", false)
 		S.objectAmmo=valueOf(t, "objectAmmo", false); S.objectWeapons=valueOf(t, "objectWeapons", false)
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
 		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
-		S.objectValuables=valueOf(t, "objectValuables", false); S.objectRubles=valueOf(t, "objectRubles", false)
-		S.priorityItemEnabled={}
-		if type(t.priorityItemEnabled) == "table" then
-			for name, enabled in pairs(t.priorityItemEnabled) do
-				if PRIORITY_VALUABLES[name] and type(enabled) == "boolean" then S.priorityItemEnabled[name] = enabled end
-			end
-		end
+		S.objectRubles=valueOf(t, "objectRubles", false)
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
@@ -3332,10 +3302,9 @@ local Configs = (function()
 
 		S.invEnabled=t.invEnabled or false
 		S.invKey = Enum.KeyCode[t.invKeyName or "X"] or Enum.KeyCode.X
-		S.invShowName=t.invShowName ~= false; S.invShowValue=t.invShowValue ~= false
-		S.invShowFull=t.invShowFull or false; S.invIncludeCorpse=t.invIncludeCorpse or false
-		S.invMaxAngleDeg=t.invMaxAngleDeg or 45; S.invMaxDistance=t.invMaxDistance or 500
-		S.invShowAttach=t.invShowAttach ~= false
+		S.invShowName=true; S.invShowValue=true; S.invShowFull=true
+		S.invIncludeCorpse=true; S.invMaxAngleDeg=30; S.invMaxDistance=1000000000
+		S.invShowAttach=true
 		S.objectSearchScope=t.objectSearchScope or "All Loot"
 		if S.objectSearchScope == "All Workspace" then S.objectSearchScope = "All Loot" end
 		S.objectSearchMarker=t.objectSearchMarker or "Name"
@@ -3352,16 +3321,12 @@ local Configs = (function()
 		if S.npcEspTracer then NPCEsp.startTracer() end
 		GroundESP.setGroundItems(S.groundItemEsp)
 		GroundESP.setCorpses(S.corpseEsp)
-		GroundESP.setContainerContents(S.containerContentsEsp)
 		GroundESP.setMinValue(S.groundMinValue)
-		GroundESP.setAlerts(S.highValueAlerts)
-		GroundESP.setAlertMin(S.highValueAlertMin)
 		ObjectESP.setEnabled(S.objectEsp)
 		ObjectESP.setCategory("ammo", S.objectAmmo); ObjectESP.setCategory("weapon", S.objectWeapons)
 		ObjectESP.setCategory("misc", S.objectMisc); ObjectESP.setCategory("tool", S.objectTools)
 		ObjectESP.setCategory("medical", S.objectMedical); ObjectESP.setCategory("armor", S.objectArmor); ObjectESP.setCategory("food", S.objectFood); ObjectESP.setCategory("key", S.objectKeys); ObjectESP.setCategory("attachment", S.objectAttachments); ObjectESP.setDistance(S.objectEspDistance)
-		ObjectESP.setCategory("valuable", S.objectValuables); ObjectESP.setCategory("currency", S.objectRubles)
-		refreshPriorityItemUI()
+		ObjectESP.setCategory("currency", S.objectRubles)
 		PlayerList.setEnabled(S.playerList)
 		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
 		Footsteps.setEnabled(S.footsteps)
@@ -3457,7 +3422,7 @@ addButton("Start Freecam", THEME.accent, function()
 	Freecam.setEnabled(true)
 end)
 addButton("Stop Freecam", THEME.danger, function() Freecam.stop(); setMenuVisible(true) end)
-addSlider("Freecam Speed", 5, 500, S.freeCamSpeed, 0, function(v) Freecam.setSpeed(v) end)
+UIControls.freeCamSpeed = addSlider("Freecam Speed", 5, 500, S.freeCamSpeed, 0, function(v) Freecam.setSpeed(v) end)
 
 addSection("Player Free Cam")
 local freeCamStatus = Instance.new("TextLabel", freeCamTab)
@@ -3544,25 +3509,25 @@ setTab("Combat")
 addSection("Aimbot")
 UIControls.aimEnabled = addToggle("Enable Aimbot", S.aimEnabled, function(on) Aimbot.setEnabled(on) end)
 
-addModeSwitch("Aim Mode", {
+UIControls.aimMode = addModeSwitch("Aim Mode", {
 	{label="Lock", value="Lock", color=THEME.accent},
 	{label="Silent", value="Silent", color=THEME.accentAlt},
 }, function() return S.aimMode end, function(v) Aimbot.setMode(v) end)
 
 UIControls.perfectSilent = addToggle("Perfect Silent (no weapon move)", S.perfectSilent, function(on) S.perfectSilent = on end)
-addSlider("Hit Chance (Silent)", 0, 100, S.silentHitChance, 0, function(v) S.silentHitChance = v end)
+UIControls.silentHitChance = addSlider("Hit Chance (Silent)", 0, 100, S.silentHitChance, 0, function(v) S.silentHitChance = v end)
 UIControls.aimVisibleOnly = addToggle("Visible Only", S.aimVisibleOnly, function(on) S.aimVisibleOnly = on end)
 UIControls.aimNPCs = addToggle("Target NPCs", S.aimNPCs, function(on) S.aimNPCs = on end)
 
 addSection("Weapon Profile Assist")
 UIControls.weaponPrediction = addToggle("Dynamic Ballistic Prediction", S.weaponPrediction, function(on) S.weaponPrediction = on end)
 UIControls.weaponAntiRecoil = addToggle("Anti Recoil", S.weaponAntiRecoil, function(on) S.weaponAntiRecoil = on end)
-addSlider("Recoil Compensation", 0, 2, S.weaponRecoilStrength, 2, function(v) S.weaponRecoilStrength = v end)
-addSlider("Bullet Drop Scale", 0, 0.25, S.weaponDropScale, 3, function(v) S.weaponDropScale = v end)
+UIControls.weaponRecoilStrength = addSlider("Recoil Compensation", 0, 2, S.weaponRecoilStrength, 2, function(v) S.weaponRecoilStrength = v end)
+UIControls.weaponDropScale = addSlider("Bullet Drop Scale", 0, 0.25, S.weaponDropScale, 3, function(v) S.weaponDropScale = v end)
 
 addSection("Activation")
-addKeyBind("Activation Key", function() return H.holdKeyName() end, function(k) S.holdKey = k end)
-addModeSwitch("Activation Mode", {
+UIControls.holdKey = addKeyBind("Activation Key", function() return H.holdKeyName() end, function(k) S.holdKey = k end)
+UIControls.aimActivationMode = addModeSwitch("Activation Mode", {
 	{label="Toggle", value="Toggle", color=THEME.accent},
 	{label="Hold", value="Hold", color=THEME.accentAlt},
 }, function() return S.aimActivationMode end, function(v)
@@ -3571,19 +3536,20 @@ addModeSwitch("Activation Mode", {
 end)
 
 addSection("Target")
-addModeSwitch("Hit Part", {
+UIControls.aimPart = addModeSwitch("Hit Part", {
 	{label="Head", value="Head", color=THEME.accent},
 	{label="Torso", value="HumanoidRootPart", color=THEME.accentAlt},
 }, function() return S.aimPart end, function(v) S.aimPart = v end)
 
 addSection("Settings")
-addSlider("FOV Angle", 10, 180, S.aimFov, 0, function(v)
+UIControls.aimFov = addSlider("FOV Angle", 10, 180, S.aimFov, 0, function(v)
 	S.aimFov = v
 	Aimbot.updateFovCircle()
 end)
-addSlider("Smoothness (Lock)", 0.01, 1.0, S.aimSmoothing, 2, function(v) S.aimSmoothing = v end)
-addSlider("Prediction", 0, 100, 0, 0, function(v) S.aimPrediction = v / 100 end)
-addColorButton("FOV Circle Color", function() return C.AIM_FOV end, function(c)
+UIControls.aimSmoothing = addSlider("Smoothness (Lock)", 0.01, 1.0, S.aimSmoothing, 2, function(v) S.aimSmoothing = v end)
+local aimPredictionControl = addSlider("Prediction", 0, 100, S.aimPrediction * 100, 0, function(v) S.aimPrediction = v / 100 end)
+UIControls.aimPrediction = {Set=function(v) aimPredictionControl:Set((v or 0) * 100, false) end}
+ColorControls.AIM_FOV = addColorButton("FOV Circle Color", function() return C.AIM_FOV end, function(c)
 	C.AIM_FOV = c
 	Aimbot.setColor(c)
 end)
@@ -3596,20 +3562,20 @@ setTab("Player ESP")
 
 addSection("Player Boxes")
 UIControls.espBox = addToggle("Enable", S.espBox, function(on) ESP.setBox(on) end)
-addColorButton("Color", function() return C.ESP end, function(c) C.ESP = c end)
+ColorControls.ESP = addColorButton("Color", function() return C.ESP end, function(c) C.ESP = c end)
 
 addSection("Player Skeleton")
 UIControls.espSkeleton = addToggle("Enable", S.espSkeleton, function(on) ESP.setSkeleton(on) end)
-addColorButton("Color", function() return C.SKELETON end, function(c) C.SKELETON = c end)
+ColorControls.SKELETON = addColorButton("Color", function() return C.SKELETON end, function(c) C.SKELETON = c end)
 
 addSection("Player Tracers")
 UIControls.espTracer = addToggle("Enable", S.espTracer, function(on) ESP.setTracer(on) end)
-addColorButton("Color", function() return C.TRACER end, function(c) C.TRACER = c end)
+ColorControls.TRACER = addColorButton("Color", function() return C.TRACER end, function(c) C.TRACER = c end)
 
 addSection("Player Glow")
 UIControls.playerGlow = addToggle("Enable", S.playerGlow, function(on) Glow.setPlayerGlow(on) end)
-addColorButton("Color", function() return C.GLOW end, function(c) C.GLOW = c; Glow.setColor(c) end)
-addSlider("Transparency", 0, 1, S.glowTransparency, 2, function(v) Glow.setTransparency(v) end)
+ColorControls.GLOW = addColorButton("Color", function() return C.GLOW end, function(c) C.GLOW = c; Glow.setColor(c) end)
+UIControls.glowTransparency = addSlider("Transparency", 0, 1, S.glowTransparency, 2, function(v) Glow.setTransparency(v) end)
 
 addSection("Player Labels")
 UIControls.espShowHeldItem = addToggle("Show Held Item", S.espShowHeldItem, function(on) S.espShowHeldItem = on end)
@@ -3617,20 +3583,20 @@ UIControls.espShowAiming = addToggle("Show Aiming", S.espShowAiming, function(on
 
 addSection("Footsteps")
 UIControls.footsteps = addToggle("Enable", S.footsteps, function(on) Footsteps.setEnabled(on) end)
-addColorButton("Color", function() return C.FOOTSTEP end, function(c) C.FOOTSTEP = c end)
-addSlider("Size", 2, 10, S.footstepSize, 0, function(v) Footsteps.setSize(v) end)
+ColorControls.FOOTSTEP = addColorButton("Color", function() return C.FOOTSTEP end, function(c) C.FOOTSTEP = c end)
+UIControls.footstepSize = addSlider("Size", 2, 10, S.footstepSize, 0, function(v) Footsteps.setSize(v) end)
 
 addSection("NPC Boxes")
 UIControls.npcEspBox = addToggle("Enable", S.npcEspBox, function(on) NPCEsp.setBox(on) end)
-addColorButton("Color", function() return C.NPC_ESP end, function(c) C.NPC_ESP = c end)
+ColorControls.NPC_ESP = addColorButton("Color", function() return C.NPC_ESP end, function(c) C.NPC_ESP = c end)
 
 addSection("NPC Skeleton")
 UIControls.npcEspSkeleton = addToggle("Enable", S.npcEspSkeleton, function(on) NPCEsp.setSkeleton(on) end)
-addColorButton("Color", function() return C.NPC_SKELETON end, function(c) C.NPC_SKELETON = c end)
+ColorControls.NPC_SKELETON = addColorButton("Color", function() return C.NPC_SKELETON end, function(c) C.NPC_SKELETON = c end)
 
 addSection("NPC Tracers")
 UIControls.npcEspTracer = addToggle("Enable", S.npcEspTracer, function(on) NPCEsp.setTracer(on) end)
-addColorButton("Color", function() return C.NPC_TRACER end, function(c) C.NPC_TRACER = c end)
+ColorControls.NPC_TRACER = addColorButton("Color", function() return C.NPC_TRACER end, function(c) C.NPC_TRACER = c end)
 
 addSection("NPC Glow")
 UIControls.npcGlow = addToggle("Enable", S.npcGlow, function(on) Glow.setNpcGlow(on) end)
@@ -3643,25 +3609,13 @@ setTab("Loot ESP")
 
 addSection("Inventory Viewer")
 UIControls.invEnabled = addToggle("Enable", S.invEnabled, function(on) Inventory.setEnabled(on) end)
-UIControls.invShowName = addToggle("Show Name", S.invShowName, function(on) Inventory.setShowName(on) end)
-UIControls.invShowValue = addToggle("Show Value", S.invShowValue, function(on) Inventory.setShowValue(on) end)
-UIControls.invShowAttach = addToggle("Show Attachments", S.invShowAttach, function(on) Inventory.setShowAttach(on) end)
-UIControls.invShowFull = addToggle("Full Inventory", S.invShowFull, function(on) Inventory.setShowFull(on) end)
-UIControls.invIncludeCorpse = addToggle("Show Corpses", S.invIncludeCorpse, function(on) Inventory.setIncludeCorpse(on) end)
-addSlider("Max Angle (°)", 5, 90, S.invMaxAngleDeg, 0, function(v) Inventory.setMaxAngle(v) end)
-addSlider("Max Distance", 50, 2000, S.invMaxDistance, 0, function(v) Inventory.setMaxDistance(v) end)
-addKeyBind("Viewer Key", function() return S.invKey.Name end, function(k)
+UIControls.invKey = addKeyBind("Viewer Key", function() return S.invKey.Name end, function(k)
 	if k.type == "key" then S.invKey = k.code end
 end)
 
 addSection("Ground Items ESP")
 UIControls.groundItemEsp = addToggle("Enable", S.groundItemEsp, function(on) GroundESP.setGroundItems(on) end)
-addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP.setMinValue(v) end)
-
-addSection("Container Contents ESP")
-UIControls.containerContentsEsp = addToggle("Show Contents", S.containerContentsEsp, function(on) GroundESP.setContainerContents(on) end)
--- Uses the Ground Items "Minimum Value" threshold above, so both loot sources
--- are filtered by the same value model.
+UIControls.groundMinValue = addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP.setMinValue(v) end)
 
 addSection("Map Object ESP")
 UIControls.objectEsp = addToggle("Enable Object ESP", S.objectEsp, function(on) ObjectESP.setEnabled(on) end)
@@ -3674,92 +3628,13 @@ UIControls.objectArmor = addToggle("Armor", S.objectArmor, function(on) ObjectES
 UIControls.objectFood = addToggle("Food & Drinks", S.objectFood, function(on) ObjectESP.setCategory("food", on) end)
 UIControls.objectKeys = addToggle("Keys & Cards", S.objectKeys, function(on) ObjectESP.setCategory("key", on) end)
 UIControls.objectAttachments = addToggle("Attachments", S.objectAttachments, function(on) ObjectESP.setCategory("attachment", on) end)
-addSlider("ESP Distance (0 = Unlimited)", 0, 5000, S.objectEspDistance, 0, function(v) ObjectESP.setDistance(v) end)
+UIControls.objectEspDistance = addSlider("ESP Distance (0 = Unlimited)", 0, 5000, S.objectEspDistance, 0, function(v) ObjectESP.setDistance(v) end)
 
-addSection("Priority Valuable ESP")
-UIControls.objectValuables = addToggle("Exact Valuable Items + Containers", S.objectValuables, function(on) ObjectESP.setCategory("valuable", on) end)
-UIControls.objectRubles = addToggle("Rubles (Any Amount) + Containers", S.objectRubles, function(on) ObjectESP.setCategory("currency", on) end)
-
-addSection("Priority Item Selection")
-local priorityItemGrid = Instance.new("ScrollingFrame", getCurrentContainer())
-priorityItemGrid.Size = UDim2.new(1, -6, 0, 210)
-priorityItemGrid.BackgroundColor3 = THEME.card
-priorityItemGrid.BorderSizePixel = 0
-priorityItemGrid.ScrollBarThickness = 5
-priorityItemGrid.ScrollBarImageColor3 = THEME.accent
-priorityItemGrid.CanvasSize = UDim2.new()
-priorityItemGrid.AutomaticCanvasSize = Enum.AutomaticSize.Y
-priorityItemGrid.LayoutOrder = #getCurrentContainer():GetChildren() + 1
-Instance.new("UICorner", priorityItemGrid).CornerRadius = UDim.new(0, 6)
-local priorityPadding = Instance.new("UIPadding", priorityItemGrid)
-priorityPadding.PaddingTop = UDim.new(0, 6); priorityPadding.PaddingBottom = UDim.new(0, 6)
-priorityPadding.PaddingLeft = UDim.new(0, 6); priorityPadding.PaddingRight = UDim.new(0, 6)
-local priorityLayout = Instance.new("UIGridLayout", priorityItemGrid)
-priorityLayout.CellSize = UDim2.new(1/3, -5, 0, 34)
-priorityLayout.CellPadding = UDim2.new(0, 5, 0, 5)
-priorityLayout.SortOrder = Enum.SortOrder.LayoutOrder
-
-local priorityItemCells = {}
-for index, itemName in ipairs(PRIORITY_ITEMS) do
-	local key = string.lower(itemName)
-	local cell = Instance.new("TextButton", priorityItemGrid)
-	cell.Name = "Priority_" .. itemName
-	cell.BackgroundColor3 = THEME.cardHover
-	cell.BorderSizePixel = 0
-	cell.AutoButtonColor = false
-	cell.Text = ""
-	cell.LayoutOrder = index
-	Instance.new("UICorner", cell).CornerRadius = UDim.new(0, 5)
-
-	local box = Instance.new("Frame", cell)
-	box.Size = UDim2.new(0, 14, 0, 14)
-	box.Position = UDim2.new(0, 7, 0.5, -7)
-	box.BackgroundColor3 = Color3.fromRGB(49, 65, 91)
-	box.BorderSizePixel = 0
-	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 3)
-	local fill = Instance.new("Frame", box)
-	fill.Size = UDim2.new(1, -4, 1, -4)
-	fill.Position = UDim2.new(0, 2, 0, 2)
-	fill.BackgroundColor3 = THEME.success
-	fill.BorderSizePixel = 0
-	Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 2)
-
-	local label = Instance.new("TextLabel", cell)
-	label.Size = UDim2.new(1, -30, 1, 0)
-	label.Position = UDim2.new(0, 26, 0, 0)
-	label.BackgroundTransparency = 1
-	label.Text = itemName
-	label.TextColor3 = THEME.text
-	label.Font = Enum.Font.GothamMedium
-	label.TextSize = 10
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.TextTruncate = Enum.TextTruncate.AtEnd
-
-	priorityItemCells[key] = {cell=cell, fill=fill, label=label}
-	cell.MouseButton1Click:Connect(function()
-		S.priorityItemEnabled[key] = S.priorityItemEnabled[key] == false
-		refreshPriorityItemUI()
-		GroundESP.refresh()
-		ObjectESP.refresh()
-	end)
-end
-
-refreshPriorityItemUI = function()
-	for key, cellData in pairs(priorityItemCells) do
-		local enabled = S.priorityItemEnabled[key] ~= false
-		cellData.fill.Visible = enabled
-		cellData.cell.BackgroundColor3 = enabled and THEME.cardHover or THEME.card
-		cellData.label.TextColor3 = enabled and THEME.text or THEME.textDim
-	end
-end
-refreshPriorityItemUI()
+addSection("Rubles")
+UIControls.objectRubles = addToggle("Show Rubles", S.objectRubles, function(on) ObjectESP.setCategory("currency", on) end)
 
 addSection("Corpses ESP")
 UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
-
-addSection("High-Value Alerts")
-UIControls.highValueAlerts = addToggle("Enable", S.highValueAlerts, function(on) GroundESP.setAlerts(on) end)
-addSlider("Alert Value", 0, 100000, S.highValueAlertMin, 0, function(v) GroundESP.setAlertMin(v) end)
 
 addSection("Map Object Finder")
 local refreshObjectSearch
@@ -3767,7 +3642,7 @@ local objectSearchInput = addTextInput("Loot name, e.g. GoldWatch or M4", "", fu
 	if refreshObjectSearch then refreshObjectSearch() end
 end)
 
-addModeSwitch("Search Scope", {
+UIControls.objectSearchScope = addModeSwitch("Search Scope", {
 	{label="All Loot", value="All Loot", color=THEME.accent},
 	{label="Containers", value="Containers", color=THEME.accentAlt},
 	{label="Dropped Items", value="Dropped Items", color=THEME.accentAlt},
@@ -3777,7 +3652,7 @@ addModeSwitch("Search Scope", {
 	if refreshObjectSearch then refreshObjectSearch() end
 end)
 
-addModeSwitch("Result Marker", {
+UIControls.objectSearchMarker = addModeSwitch("Result Marker", {
 	{label="Name", value="Name", color=THEME.accent},
 	{label="Purple Tracer", value="Tracer", color=Color3.fromRGB(195, 90, 255)},
 }, function() return S.objectSearchMarker end, function(value)
@@ -3884,9 +3759,9 @@ createTab("Camera")
 setTab("Camera")
 
 addSection("Field of View")
-addSlider("Player FOV", 30, 120, S.baseFov, 0, function(v) CamFOV.setBase(v) end)
-addSlider("Zoom FOV", 10, 70, S.zoomFov, 0, function(v) CamFOV.setZoom(v) end)
-addKeyBind("Zoom Key", function() return S.zoomKey.Name end, function(k)
+UIControls.baseFov = addSlider("Player FOV", 30, 120, S.baseFov, 0, function(v) CamFOV.setBase(v) end)
+UIControls.zoomFov = addSlider("Zoom FOV", 10, 70, S.zoomFov, 0, function(v) CamFOV.setZoom(v) end)
+UIControls.zoomKey = addKeyBind("Zoom Key", function() return S.zoomKey.Name end, function(k)
 	if k.type == "key" then S.zoomKey = k.code end
 end)
 
@@ -3947,7 +3822,7 @@ local function destroyHub()
 	NPCEsp.stopESP(); NPCEsp.stopSkeleton(); NPCEsp.stopTracer()
 	Glow.setPlayerGlow(false); Glow.setNpcGlow(false)
 	Footsteps.setEnabled(false)
-	GroundESP.setGroundItems(false); GroundESP.setCorpses(false); GroundESP.setContainerContents(false); GroundESP.setAlerts(false)
+	GroundESP.setGroundItems(false); GroundESP.setCorpses(false)
 	ObjectESP.setEnabled(false)
 	WorldSearch.clearFocus()
 	Freecam.stop()
@@ -3973,7 +3848,7 @@ end
 Shared.DeltaHubCleanup = destroyHub
 
 addSection("Hub")
-addKeyBind("Dismiss Key", function() return S.dismissKey.Name end, function(k)
+UIControls.dismissKey = addKeyBind("Dismiss Key", function() return S.dismissKey.Name end, function(k)
 	if k.type == "key" then S.dismissKey = k.code end
 end)
 addButton("Unload Hub", THEME.danger, destroyHub)
@@ -3991,11 +3866,9 @@ addButton("Reset Settings", THEME.danger, function()
 	S.playerGlow=false; S.npcGlow=false; S.glowTransparency=0.5
 	S.footsteps=false; S.footstepSize=4
 	S.playerList=false; S.fullbright=false; S.noFog=false
-	S.groundItemEsp=false; S.corpseEsp=false; S.containerContentsEsp=false; S.groundMinValue=0
-	S.highValueAlerts=false; S.highValueAlertMin=10000
+	S.groundItemEsp=false; S.corpseEsp=false; S.containerContentsEsp=true; S.groundMinValue=0
 	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false
-	S.objectValuables=false; S.objectRubles=false
-	S.priorityItemEnabled={}; refreshPriorityItemUI()
+	S.objectRubles=false
 	S.freeCam=false; S.freeCamSpeed=50
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
@@ -4003,8 +3876,8 @@ addButton("Reset Settings", THEME.danger, function()
 	S.vmColor=Color3.fromRGB(79,155,121)
 	S.wpnEnabled=false; S.wpnTransparency=0; S.wpnColor=Color3.new(1,1,1)
 	S.invEnabled=false; S.invKey=Enum.KeyCode.X
-	S.invShowName=true; S.invShowValue=true; S.invShowFull=false
-	S.invIncludeCorpse=false; S.invMaxAngleDeg=45; S.invMaxDistance=500
+	S.invShowName=true; S.invShowValue=true; S.invShowFull=true
+	S.invIncludeCorpse=true; S.invMaxAngleDeg=30; S.invMaxDistance=1000000000
 	S.invShowAttach=true
 	S.objectSearchScope="All Loot"
 	S.objectSearchMarker="Name"
@@ -4014,7 +3887,7 @@ addButton("Reset Settings", THEME.danger, function()
 	Glow.setPlayerGlow(false); Glow.setNpcGlow(false)
 	Footsteps.setEnabled(false)
 	PlayerList.setEnabled(false)
-	GroundESP.setGroundItems(false); GroundESP.setCorpses(false); GroundESP.setContainerContents(false); GroundESP.setAlerts(false)
+	GroundESP.setGroundItems(false); GroundESP.setCorpses(false)
 	ObjectESP.setEnabled(false)
 	WorldSearch.clearFocus()
 	Freecam.stop()
