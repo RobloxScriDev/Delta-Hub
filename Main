@@ -61,6 +61,7 @@ local S = {
 	objectMedical=false, objectArmor=false, objectFood=false, objectKeys=false, objectAttachments=false,
 	objectEspDistance=500,
 	objectRubles=false,
+	trackedLootEnabled={},
 
 	freeCam=false, freeCamSpeed=50,
 
@@ -93,7 +94,8 @@ local TRACKED_LOOT = {
 local TRACKED_LOOT_NAMES = {}
 for _, name in ipairs(TRACKED_LOOT) do TRACKED_LOOT_NAMES[string.lower(name)] = true end
 local function isTrackedLoot(name)
-	return TRACKED_LOOT_NAMES[string.lower(name)] == true
+	local key = string.lower(name)
+	return TRACKED_LOOT_NAMES[key] == true and S.trackedLootEnabled[key] ~= false
 end
 
 local isHolding        = false
@@ -1610,12 +1612,18 @@ Inventory = (function()
 	end
 
 	local function getItemValue(item)
+		-- Container slots can carry their own live price. Prefer it before
+		-- consulting the replicated definition database.
+		local directPrice = item:GetAttribute(CFG.priceAttr) or item:GetAttribute("Value")
+		local amount = item:GetAttribute(CFG.amountAttr) or 1
+		if type(directPrice) == "number" and directPrice > 0 then
+			return directPrice * (type(amount) == "number" and amount or 1)
+		end
 		local def = getItemDef(item)
 		if not def then return 0 end
 		local props = def:FindFirstChild(CFG.itemPropsName)
 		if not props then return 0 end
 		local price = props:GetAttribute(CFG.priceAttr) or 0
-		local amount = item:GetAttribute(CFG.amountAttr) or 1
 		if type(price) ~= "number" then price = 0 end
 		if type(amount) ~= "number" then amount = 1 end
 		return price * amount
@@ -3146,6 +3154,7 @@ end
 local HttpService = game:GetService("HttpService")
 local UIControls = {}
 local ColorControls = {}
+local refreshTrackedLootUI = function() end
 local function syncToggleControls()
 	for setting, control in pairs(UIControls) do
 		if control and control.Set then control:Set(S[setting], false) end
@@ -3218,6 +3227,7 @@ local Configs = (function()
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
 			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
 			objectRubles=S.objectRubles,
+			trackedLootEnabled=S.trackedLootEnabled,
 			freeCamSpeed=S.freeCamSpeed,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -3277,6 +3287,14 @@ local Configs = (function()
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
 		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
 		S.objectRubles=valueOf(t, "objectRubles", false)
+		S.trackedLootEnabled={}
+		if type(t.trackedLootEnabled) == "table" then
+			for name, enabled in pairs(t.trackedLootEnabled) do
+				if TRACKED_LOOT_NAMES[name] and type(enabled) == "boolean" then
+					S.trackedLootEnabled[name] = enabled
+				end
+			end
+		end
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
@@ -3327,6 +3345,7 @@ local Configs = (function()
 		ObjectESP.setCategory("misc", S.objectMisc); ObjectESP.setCategory("tool", S.objectTools)
 		ObjectESP.setCategory("medical", S.objectMedical); ObjectESP.setCategory("armor", S.objectArmor); ObjectESP.setCategory("food", S.objectFood); ObjectESP.setCategory("key", S.objectKeys); ObjectESP.setCategory("attachment", S.objectAttachments); ObjectESP.setDistance(S.objectEspDistance)
 		ObjectESP.setCategory("currency", S.objectRubles)
+		refreshTrackedLootUI()
 		PlayerList.setEnabled(S.playerList)
 		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
 		Footsteps.setEnabled(S.footsteps)
@@ -3617,6 +3636,61 @@ addSection("Ground Items ESP")
 UIControls.groundItemEsp = addToggle("Enable", S.groundItemEsp, function(on) GroundESP.setGroundItems(on) end)
 UIControls.groundMinValue = addSlider("Minimum Value", 0, 100000, S.groundMinValue, 0, function(v) GroundESP.setMinValue(v) end)
 
+addSection("Exact Valuable Items")
+local trackedGrid = Instance.new("ScrollingFrame", getCurrentContainer())
+trackedGrid.Size = UDim2.new(1, -6, 0, 145)
+trackedGrid.BackgroundColor3 = THEME.card
+trackedGrid.BorderSizePixel = 0
+trackedGrid.ScrollBarThickness = 5
+trackedGrid.ScrollBarImageColor3 = THEME.accent
+trackedGrid.CanvasSize = UDim2.new()
+trackedGrid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+trackedGrid.LayoutOrder = #getCurrentContainer():GetChildren() + 1
+Instance.new("UICorner", trackedGrid).CornerRadius = UDim.new(0, 6)
+local trackedPadding = Instance.new("UIPadding", trackedGrid)
+trackedPadding.PaddingTop = UDim.new(0, 6); trackedPadding.PaddingBottom = UDim.new(0, 6)
+trackedPadding.PaddingLeft = UDim.new(0, 6); trackedPadding.PaddingRight = UDim.new(0, 6)
+local trackedLayout = Instance.new("UIGridLayout", trackedGrid)
+trackedLayout.CellSize = UDim2.new(1/3, -5, 0, 32)
+trackedLayout.CellPadding = UDim2.new(0, 5, 0, 5)
+trackedLayout.SortOrder = Enum.SortOrder.LayoutOrder
+local trackedCells = {}
+for index, itemName in ipairs(TRACKED_LOOT) do
+	local key = string.lower(itemName)
+	local cell = Instance.new("TextButton", trackedGrid)
+	cell.BackgroundColor3 = THEME.cardHover; cell.BorderSizePixel = 0
+	cell.AutoButtonColor = false; cell.Text = ""; cell.LayoutOrder = index
+	Instance.new("UICorner", cell).CornerRadius = UDim.new(0, 5)
+	local box = Instance.new("Frame", cell)
+	box.Size = UDim2.new(0, 14, 0, 14); box.Position = UDim2.new(0, 6, 0.5, -7)
+	box.BackgroundColor3 = Color3.fromRGB(49, 65, 91); box.BorderSizePixel = 0
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 3)
+	local fill = Instance.new("Frame", box)
+	fill.Size = UDim2.new(1, -4, 1, -4); fill.Position = UDim2.new(0, 2, 0, 2)
+	fill.BackgroundColor3 = THEME.success; fill.BorderSizePixel = 0
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 2)
+	local label = Instance.new("TextLabel", cell)
+	label.Size = UDim2.new(1, -27, 1, 0); label.Position = UDim2.new(0, 24, 0, 0)
+	label.BackgroundTransparency = 1; label.Text = itemName; label.TextColor3 = THEME.text
+	label.Font = Enum.Font.GothamMedium; label.TextSize = 10
+	label.TextXAlignment = Enum.TextXAlignment.Left; label.TextTruncate = Enum.TextTruncate.AtEnd
+	trackedCells[key] = {cell=cell, fill=fill, label=label}
+	cell.MouseButton1Click:Connect(function()
+		S.trackedLootEnabled[key] = S.trackedLootEnabled[key] == false
+		refreshTrackedLootUI()
+		GroundESP.refresh()
+	end)
+end
+refreshTrackedLootUI = function()
+	for key, data in pairs(trackedCells) do
+		local enabled = S.trackedLootEnabled[key] ~= false
+		data.fill.Visible = enabled
+		data.cell.BackgroundColor3 = enabled and THEME.cardHover or THEME.card
+		data.label.TextColor3 = enabled and THEME.text or THEME.textDim
+	end
+end
+refreshTrackedLootUI()
+
 addSection("Map Object ESP")
 UIControls.objectEsp = addToggle("Enable Object ESP", S.objectEsp, function(on) ObjectESP.setEnabled(on) end)
 UIControls.objectAmmo = addToggle("Ammo", S.objectAmmo, function(on) ObjectESP.setCategory("ammo", on) end)
@@ -3868,7 +3942,8 @@ addButton("Reset Settings", THEME.danger, function()
 	S.playerList=false; S.fullbright=false; S.noFog=false
 	S.groundItemEsp=false; S.corpseEsp=false; S.containerContentsEsp=true; S.groundMinValue=0
 	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false
-	S.objectRubles=false
+	S.objectRubles=false; S.trackedLootEnabled={}
+	refreshTrackedLootUI()
 	S.freeCam=false; S.freeCamSpeed=50
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
