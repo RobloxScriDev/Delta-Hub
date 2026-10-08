@@ -82,6 +82,7 @@ local S = {
 	invIncludeCorpse=false, invMaxAngleDeg=45, invMaxDistance=500,
 	invShowAttach=true,
 	objectSearchScope="All Workspace",
+	objectSearchMarker="Name",
 }
 
 -- Exact internal names confirmed from the local inventory scanners. Each item
@@ -902,6 +903,9 @@ local Freecam = (function()
 	end
 
 	local function update(dt)
+		-- Scriptable cameras can be reset by other UI interactions; keep mouse look
+		-- captured every frame while freecam is active.
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 		local delta = UserInputService:GetMouseDelta()
 		yaw = yaw - delta.X * 0.0025
 		pitch = math.clamp(pitch - delta.Y * 0.0025, -1.45, 1.45)
@@ -939,6 +943,16 @@ local Freecam = (function()
 	end
 
 	function self.setSpeed(speed) S.freeCamSpeed = speed end
+	function self.startNearPlayer(plr)
+		local root = plr and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+		if not root then return false end
+		if not connection then self.setEnabled(true) end
+		position = root.Position - root.CFrame.LookVector * 10 + Vector3.new(0, 4, 0)
+		local look = root.CFrame.LookVector
+		yaw = math.atan2(-look.X, -look.Z)
+		pitch = -0.18
+		return true
+	end
 	function self.setOverlayCallback(callback) overlayCallback = callback end
 	function self.stop() stop() end
 	return self
@@ -1938,7 +1952,8 @@ local GroundESP = (function()
 
 	local containerWords = {
 		"crate", "chest", "box", "bag", "cache", "container", "stash", "storage",
-		"locker", "safe", "case", "register", "barrel", "supply", "loot",
+		"locker", "safe", "case", "register", "barrel", "supply", "loot", "pouch",
+		"duffel", "briefcase", "suitcase", "backpack", "pack", "kgb",
 	}
 
 	local function hasContainerMarker(node)
@@ -2261,7 +2276,7 @@ end)()
 -- ============================================================
 local WorldSearch = (function()
 	local self = {}
-	local activeHighlight, focusToken = nil, 0
+	local activeHighlight, activeMarker, focusToken = nil, nil, 0
 
 	local function getRoot(scope)
 		if scope == "Containers" then return Workspace:FindFirstChild("Containers") end
@@ -2309,13 +2324,35 @@ local WorldSearch = (function()
 		return results, count, nil
 	end
 
-	function self.focus(instance)
+	local function clearMarker()
+		if activeMarker and activeMarker.drawing then activeMarker.drawing:Remove() end
+		activeMarker = nil
+	end
+
+	RunService.RenderStepped:Connect(function()
+		if not activeMarker or not activeMarker.instance or not activeMarker.instance.Parent then return end
+		local position = getPosition(activeMarker.instance)
+		if not position then clearMarker(); return end
+		local point, onScreen = Camera:WorldToViewportPoint(position)
+		local drawing = activeMarker.drawing
+		drawing.Visible = onScreen and point.Z > 0
+		if drawing.Visible then
+			if activeMarker.mode == "Tracer" then
+				drawing.From = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y - 8)
+				drawing.To = Vector2.new(point.X, point.Y)
+			else
+				drawing.Position = Vector2.new(point.X, point.Y)
+			end
+		end
+	end)
+
+	function self.focus(instance, mode)
 		if activeHighlight then activeHighlight:Destroy(); activeHighlight = nil end
+		clearMarker()
 		if not instance or not instance.Parent then return end
 		local adornee = instance
 		if not adornee:IsA("Model") and not adornee:IsA("BasePart") then return end
 		focusToken = focusToken + 1
-		local token = focusToken
 		local highlight = Instance.new("Highlight")
 		highlight.Name = "DeltaObjectSearchFocus"
 		highlight.Adornee = adornee
@@ -2325,17 +2362,25 @@ local WorldSearch = (function()
 		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 		highlight.Parent = adornee
 		activeHighlight = highlight
-		task.delay(12, function()
-			if token == focusToken and activeHighlight == highlight then
-				highlight:Destroy()
-				activeHighlight = nil
-			end
-		end)
+		local drawing = Drawing.new(mode == "Tracer" and "Line" or "Text")
+		drawing.Visible = false
+		drawing.Color = Color3.fromRGB(195, 90, 255)
+		drawing.Thickness = 2
+		if mode ~= "Tracer" then
+			drawing.Text = instance.Name
+			drawing.Size = 15
+			drawing.Center = true
+			drawing.Outline = true
+			drawing.OutlineColor = Color3.new(0, 0, 0)
+		end
+		activeMarker = {instance=instance, mode=mode, drawing=drawing}
+		-- The marker remains until the user clears it or selects another result.
 	end
 
 	function self.clearFocus()
 		focusToken = focusToken + 1
 		if activeHighlight then activeHighlight:Destroy(); activeHighlight = nil end
+		clearMarker()
 	end
 
 	return self
@@ -3154,6 +3199,7 @@ local Configs = (function()
 			invMaxAngleDeg=S.invMaxAngleDeg, invMaxDistance=S.invMaxDistance,
 			invShowAttach=S.invShowAttach,
 			objectSearchScope=S.objectSearchScope,
+			objectSearchMarker=S.objectSearchMarker,
 			colors={
 				ESP={C.ESP.R,C.ESP.G,C.ESP.B}, SKELETON={C.SKELETON.R,C.SKELETON.G,C.SKELETON.B},
 				TRACER={C.TRACER.R,C.TRACER.G,C.TRACER.B}, AIM_FOV={C.AIM_FOV.R,C.AIM_FOV.G,C.AIM_FOV.B},
@@ -3238,6 +3284,7 @@ local Configs = (function()
 		S.invMaxAngleDeg=t.invMaxAngleDeg or 45; S.invMaxDistance=t.invMaxDistance or 500
 		S.invShowAttach=t.invShowAttach ~= false
 		S.objectSearchScope=t.objectSearchScope or "All Workspace"
+		S.objectSearchMarker=t.objectSearchMarker or "Name"
 
 		Aimbot.stop()
 		if S.aimEnabled then Aimbot.start() end
@@ -3413,9 +3460,12 @@ local function refreshFreeCamPlayers()
 		row.MouseEnter:Connect(function() row.BackgroundColor3 = THEME.cardHover end)
 		row.MouseLeave:Connect(function() row.BackgroundColor3 = THEME.card end)
 		row.MouseButton1Click:Connect(function()
-			AdminTools.spectate(data.player)
-			Inventory.setPinnedPlayer(data.player)
-			freeCamStatus.Text = "Following: " .. data.player.Name .. " — inventory loaded"
+			AdminTools.stopSpectating()
+			Inventory.setPinnedPlayer(nil)
+			if Freecam.startNearPlayer(data.player) then
+				setMenuVisible(false)
+				freeCamStatus.Text = "Freecam near: " .. data.player.Name
+			end
 		end)
 	end
 end
@@ -3672,6 +3722,13 @@ addModeSwitch("Search Scope", {
 	if refreshObjectSearch then refreshObjectSearch() end
 end)
 
+addModeSwitch("Result Marker", {
+	{label="Name", value="Name", color=THEME.accent},
+	{label="Purple Tracer", value="Tracer", color=Color3.fromRGB(195, 90, 255)},
+}, function() return S.objectSearchMarker end, function(value)
+	S.objectSearchMarker = value
+end)
+
 local objectSearchStatus = Instance.new("TextLabel", getCurrentContainer())
 objectSearchStatus.Size = UDim2.new(1, -6, 0, 34)
 objectSearchStatus.BackgroundColor3 = THEME.card
@@ -3737,8 +3794,8 @@ refreshObjectSearch = function()
 		row.MouseEnter:Connect(function() row.BackgroundColor3 = THEME.cardHover end)
 		row.MouseLeave:Connect(function() row.BackgroundColor3 = THEME.card end)
 		row.MouseButton1Click:Connect(function()
-			WorldSearch.focus(result.instance)
-			objectSearchStatus.Text = "Highlighted: " .. result.instance:GetFullName() .. " (12 seconds)"
+			WorldSearch.focus(result.instance, S.objectSearchMarker)
+			objectSearchStatus.Text = "Marked: " .. result.instance:GetFullName() .. " (clear it when finished)"
 			objectSearchStatus.TextColor3 = THEME.accent
 		end)
 	end
@@ -3749,35 +3806,6 @@ addButton("Clear Object Highlight", THEME.card, function()
 	WorldSearch.clearFocus()
 	objectSearchStatus.Text = "Object highlight cleared."
 	objectSearchStatus.TextColor3 = THEME.textDim
-end)
-
--- ============================================================
--- TAB "PLAYER"
--- ============================================================
-createTab("Player")
-setTab("Player")
-
-addSection("Hands (ViewModel)")
-UIControls.vmEnabled = addToggle("Enable", S.vmEnabled, function(on) VM.setVMEnabled(on) end)
-addSlider("Hands Transparency", 0, 1, S.vmTransparency, 2, function(v) VM.setVMTransparency(v) end)
-
-addSection("Hands Offset")
-addSlider("Offset X", -5, 5, S.vmOffsetX, 2, function(v) VM.setVMOffset(v, nil, nil) end)
-addSlider("Offset Y", -5, 5, S.vmOffsetY, 2, function(v) VM.setVMOffset(nil, v, nil) end)
-addSlider("Offset Z", -5, 5, S.vmOffsetZ, 2, function(v) VM.setVMOffset(nil, nil, v) end)
-
-addSection("Hands Color")
-addColorButton("Color", function() return C.VM_COLOR end, function(c)
-	C.VM_COLOR = c
-	VM.setVMColor(c)
-end)
-
-addSection("Weapon in Hands")
-UIControls.wpnEnabled = addToggle("Enable", S.wpnEnabled, function(on) VM.setWpnEnabled(on) end)
-addSlider("Weapon Transparency", 0, 1, S.wpnTransparency, 2, function(v) VM.setWpnTransparency(v) end)
-addColorButton("Weapon Color", function() return C.WPN_COLOR end, function(c)
-	C.WPN_COLOR = c
-	VM.setWpnColor(c)
 end)
 
 -- ============================================================
@@ -3924,6 +3952,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.invIncludeCorpse=false; S.invMaxAngleDeg=45; S.invMaxDistance=500
 	S.invShowAttach=true
 	S.objectSearchScope="All Workspace"
+	S.objectSearchMarker="Name"
 	Aimbot.stop()
 	ESP.stopESP(); ESP.stopSkeleton(); ESP.stopTracer()
 	NPCEsp.stopESP(); NPCEsp.stopSkeleton(); NPCEsp.stopTracer()
