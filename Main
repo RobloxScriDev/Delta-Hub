@@ -62,6 +62,7 @@ local S = {
 	objectMedical=false, objectArmor=false, objectFood=false, objectKeys=false, objectAttachments=false,
 	objectEspDistance=500,
 	objectValuables=false, objectRubles=false,
+	priorityItemEnabled={},
 
 	freeCam=false, freeCamSpeed=50,
 
@@ -82,6 +83,21 @@ local S = {
 	invShowAttach=true,
 	objectSearchScope="All Workspace",
 }
+
+-- Exact internal names confirmed from the local inventory scanners. Each item
+-- defaults to enabled and can be disabled individually in Loot ESP.
+local PRIORITY_ITEMS = {
+	"AirfieldTunnelsKey", "BlueCard", "CatToken", "CraneKey", "DormB203Key", "EVACKey",
+	"FactoryGarageKey", "FuelingStationKey", "LighthouseKey", "M4", "OrangeCard", "SPSh44",
+	"SwampKey", "Villa1Key", "VillageKey", "KeyChain",
+	"AA2", "ADAR15", "Altyn", "Beans", "Cologne", "DeniCard", "GoldWatch", "GoldenTicket",
+	"Matryoshka", "MaxEnergy", "SerumGreen", "SerumYellow", "Smartphone", "Smersh", "SolterStatue",
+}
+local PRIORITY_VALUABLES = {}
+for _, name in ipairs(PRIORITY_ITEMS) do PRIORITY_VALUABLES[string.lower(name)] = true end
+local function isPriorityItemEnabled(name)
+	return PRIORITY_VALUABLES[name] and S.priorityItemEnabled[name] ~= false
+end
 
 local isHolding        = false
 local isHoldingInv     = false
@@ -1981,6 +1997,24 @@ local GroundESP = (function()
 		return table.concat(shown, ", "), total
 	end
 
+	local function getPriorityContainerSummary(inventory)
+		local counts = {}
+		for _, item in ipairs(inventory:GetChildren()) do
+			local name = string.lower(item.Name)
+			if (isPriorityItemEnabled(name) and S.objectValuables) or (name == "rubles" and S.objectRubles) then
+				local amount = item:GetAttribute("Amount")
+				counts[item.Name] = (counts[item.Name] or 0) + (type(amount) == "number" and amount or 1)
+			end
+		end
+		local names = {}
+		for name, amount in pairs(counts) do
+			table.insert(names, name == "Rubles" and (name .. " ×" .. amount) or (amount > 1 and (name .. " ×" .. amount) or name))
+		end
+		table.sort(names)
+		if #names == 0 then return nil end
+		return table.concat(names, ", ")
+	end
+
 	local function notify(entry, name, value)
 		if not S.highValueAlerts or value < S.highValueAlertMin or alerted[entry] then return end
 		alerted[entry] = true
@@ -1994,7 +2028,7 @@ local GroundESP = (function()
 	end
 
 	local function scan()
-		if not (S.groundItemEsp or S.corpseEsp or S.containerContentsEsp or S.highValueAlerts) then
+		if not (S.groundItemEsp or S.corpseEsp or S.containerContentsEsp or S.highValueAlerts or S.objectValuables or S.objectRubles) then
 			for entry in pairs(entries) do remove(entry) end
 			return
 		end
@@ -2024,21 +2058,24 @@ local GroundESP = (function()
 				end
 			end
 		end
-		if S.containerContentsEsp then
+		if S.containerContentsEsp or S.objectValuables or S.objectRubles then
 			for _, inventory in ipairs(Workspace:GetDescendants()) do
 				if (inventory:IsA("Folder") or inventory:IsA("Configuration"))
 					and string.lower(inventory.Name) == "inventory" then
 					local container = getContainerRoot(inventory)
 					local summary, value = container and getContainerSummary(inventory)
-					if container and summary and getPosition(container) then
+					local prioritySummary = container and getPriorityContainerSummary(inventory)
+					local showContents = S.containerContentsEsp and summary and value >= S.groundMinValue
+					local showPriority = prioritySummary ~= nil
+					if container and (showContents or showPriority) and getPosition(container) then
 						alive[container] = true
 						notify(container, container:GetAttribute("DisplayName") or container.Name, value)
-						if value >= S.groundMinValue then
-							found[container] = true
-							local label = (container:GetAttribute("DisplayName") or container.Name) .. "\n" .. summary
-							if not entries[container] then add(container, "container", label, value) end
-							entries[container].name, entries[container].value = label, value
-						end
+						found[container] = true
+						local label = container:GetAttribute("DisplayName") or container.Name
+						if showPriority then label = label .. "\n★ " .. prioritySummary end
+						if showContents then label = label .. "\n" .. summary end
+						if not entries[container] then add(container, "container", label, value or 0) end
+						entries[container].name, entries[container].value = label, value or 0
 					end
 				end
 			end
@@ -2077,7 +2114,9 @@ local GroundESP = (function()
 				data.text.Position = Vector2.new(point.X, point.Y)
 				data.text.Color = data.kind == "corpse" and C.CORPSE or (data.kind == "container" and C.CONTAINER or C.GROUND_ITEM)
 				if data.kind == "container" then
-					data.text.Text = string.format("%s\n$%d | %dm", data.name, math.floor(data.value), distance)
+					data.text.Text = data.value > 0
+						and string.format("%s\n$%d | %dm", data.name, math.floor(data.value), distance)
+						or string.format("%s\n[%dm]", data.name, distance)
 				else
 					data.text.Text = string.format("%s | $%d | %dm", data.name, math.floor(data.value), distance)
 				end
@@ -2091,6 +2130,7 @@ local GroundESP = (function()
 	function self.setMinValue(value) S.groundMinValue = value; scan() end
 	function self.setAlerts(on) S.highValueAlerts = on; scan() end
 	function self.setAlertMin(value) S.highValueAlertMin = value end
+	function self.refresh() dirty = true; scan() end
 
 	return self
 end)()
@@ -2099,14 +2139,6 @@ end)()
 local ObjectESP = (function()
 	local self = {}
 	local drawings, lastScan = {}, 0
-	-- Exact internal names captured from the local inventory scanner. These are
-	-- intentionally separate from the broad keyword categories below.
-	local priorityValuables = {
-		airfieldtunnelskey=true, bluecard=true, cattoken=true, cranekey=true,
-		dormb203key=true, evackey=true, factorygaragekey=true, fuelingstationkey=true,
-		lighthousekey=true, m4=true, orangecard=true, spsh44=true, swampkey=true,
-		villa1key=true, villagekey=true, keychain=true,
-	}
 	local keywords = {
 		{"medical", {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"}},
 		{"armor", {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"}},
@@ -2126,7 +2158,7 @@ local ObjectESP = (function()
 	local function categoryFor(instance)
 		local exactName = string.lower(instance.Name)
 		if exactName == "rubles" then return "currency" end
-		if priorityValuables[exactName] then return "valuable" end
+		if isPriorityItemEnabled(exactName) then return "valuable" end
 		local text = string.lower(instance.Name .. " " .. tostring(instance:GetAttribute("DisplayName") or "") .. " " .. tostring(instance:GetAttribute("ItemType") or ""))
 		for _, rule in ipairs(keywords) do
 			local category, words = rule[1], rule[2]
@@ -2218,6 +2250,7 @@ local ObjectESP = (function()
 		elseif category == "attachment" then S.objectAttachments = on end
 		if category == "valuable" then S.objectValuables = on
 		elseif category == "currency" then S.objectRubles = on end
+		GroundESP.refresh()
 		scan()
 	end
 	function self.setDistance(value) S.objectEspDistance = value end
@@ -3033,6 +3066,7 @@ end
 -- CONFIGS
 local HttpService = game:GetService("HttpService")
 local UIControls = {}
+local refreshPriorityItemUI = function() end
 
 local function syncToggleControls()
 	for setting, control in pairs(UIControls) do
@@ -3104,6 +3138,7 @@ local Configs = (function()
 			objectEsp=S.objectEsp, objectAmmo=S.objectAmmo, objectWeapons=S.objectWeapons,
 			objectMisc=S.objectMisc, objectTools=S.objectTools, objectMedical=S.objectMedical, objectArmor=S.objectArmor, objectFood=S.objectFood, objectKeys=S.objectKeys, objectAttachments=S.objectAttachments, objectEspDistance=S.objectEspDistance,
 			objectValuables=S.objectValuables, objectRubles=S.objectRubles,
+			priorityItemEnabled=S.priorityItemEnabled,
 			freeCamSpeed=S.freeCamSpeed,
 			fullbright=S.fullbright, noFog=S.noFog,
 			dismissKeyName=S.dismissKey.Name,
@@ -3167,6 +3202,12 @@ local Configs = (function()
 		S.objectMisc=valueOf(t, "objectMisc", false); S.objectTools=valueOf(t, "objectTools", false)
 		S.objectMedical=valueOf(t, "objectMedical", false); S.objectArmor=valueOf(t, "objectArmor", false); S.objectFood=valueOf(t, "objectFood", false); S.objectKeys=valueOf(t, "objectKeys", false); S.objectAttachments=valueOf(t, "objectAttachments", false); S.objectEspDistance=valueOf(t, "objectEspDistance", 500)
 		S.objectValuables=valueOf(t, "objectValuables", false); S.objectRubles=valueOf(t, "objectRubles", false)
+		S.priorityItemEnabled={}
+		if type(t.priorityItemEnabled) == "table" then
+			for name, enabled in pairs(t.priorityItemEnabled) do
+				if PRIORITY_VALUABLES[name] and type(enabled) == "boolean" then S.priorityItemEnabled[name] = enabled end
+			end
+		end
 		S.freeCamSpeed=valueOf(t, "freeCamSpeed", 50)
 
 		S.fullbright=t.fullbright or false; S.noFog=t.noFog or false
@@ -3219,6 +3260,7 @@ local Configs = (function()
 		ObjectESP.setCategory("misc", S.objectMisc); ObjectESP.setCategory("tool", S.objectTools)
 		ObjectESP.setCategory("medical", S.objectMedical); ObjectESP.setCategory("armor", S.objectArmor); ObjectESP.setCategory("food", S.objectFood); ObjectESP.setCategory("key", S.objectKeys); ObjectESP.setCategory("attachment", S.objectAttachments); ObjectESP.setDistance(S.objectEspDistance)
 		ObjectESP.setCategory("valuable", S.objectValuables); ObjectESP.setCategory("currency", S.objectRubles)
+		refreshPriorityItemUI()
 		PlayerList.setEnabled(S.playerList)
 		Glow.setPlayerGlow(S.playerGlow); Glow.setNpcGlow(S.npcGlow)
 		Footsteps.setEnabled(S.footsteps)
@@ -3531,8 +3573,82 @@ UIControls.objectAttachments = addToggle("Attachments", S.objectAttachments, fun
 addSlider("ESP Distance (0 = Unlimited)", 0, 5000, S.objectEspDistance, 0, function(v) ObjectESP.setDistance(v) end)
 
 addSection("Priority Valuable ESP")
-UIControls.objectValuables = addToggle("Exact Valuable Items", S.objectValuables, function(on) ObjectESP.setCategory("valuable", on) end)
-UIControls.objectRubles = addToggle("Rubles (Any Amount)", S.objectRubles, function(on) ObjectESP.setCategory("currency", on) end)
+UIControls.objectValuables = addToggle("Exact Valuable Items + Containers", S.objectValuables, function(on) ObjectESP.setCategory("valuable", on) end)
+UIControls.objectRubles = addToggle("Rubles (Any Amount) + Containers", S.objectRubles, function(on) ObjectESP.setCategory("currency", on) end)
+
+addSection("Priority Item Selection")
+local priorityItemGrid = Instance.new("ScrollingFrame", getCurrentContainer())
+priorityItemGrid.Size = UDim2.new(1, -6, 0, 210)
+priorityItemGrid.BackgroundColor3 = THEME.card
+priorityItemGrid.BorderSizePixel = 0
+priorityItemGrid.ScrollBarThickness = 5
+priorityItemGrid.ScrollBarImageColor3 = THEME.accent
+priorityItemGrid.CanvasSize = UDim2.new()
+priorityItemGrid.AutomaticCanvasSize = Enum.AutomaticSize.Y
+priorityItemGrid.LayoutOrder = #getCurrentContainer():GetChildren() + 1
+Instance.new("UICorner", priorityItemGrid).CornerRadius = UDim.new(0, 6)
+local priorityPadding = Instance.new("UIPadding", priorityItemGrid)
+priorityPadding.PaddingTop = UDim.new(0, 6); priorityPadding.PaddingBottom = UDim.new(0, 6)
+priorityPadding.PaddingLeft = UDim.new(0, 6); priorityPadding.PaddingRight = UDim.new(0, 6)
+local priorityLayout = Instance.new("UIGridLayout", priorityItemGrid)
+priorityLayout.CellSize = UDim2.new(1/3, -5, 0, 34)
+priorityLayout.CellPadding = UDim2.new(0, 5, 0, 5)
+priorityLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local priorityItemCells = {}
+for index, itemName in ipairs(PRIORITY_ITEMS) do
+	local key = string.lower(itemName)
+	local cell = Instance.new("TextButton", priorityItemGrid)
+	cell.Name = "Priority_" .. itemName
+	cell.BackgroundColor3 = THEME.cardHover
+	cell.BorderSizePixel = 0
+	cell.AutoButtonColor = false
+	cell.Text = ""
+	cell.LayoutOrder = index
+	Instance.new("UICorner", cell).CornerRadius = UDim.new(0, 5)
+
+	local box = Instance.new("Frame", cell)
+	box.Size = UDim2.new(0, 14, 0, 14)
+	box.Position = UDim2.new(0, 7, 0.5, -7)
+	box.BackgroundColor3 = Color3.fromRGB(49, 65, 91)
+	box.BorderSizePixel = 0
+	Instance.new("UICorner", box).CornerRadius = UDim.new(0, 3)
+	local fill = Instance.new("Frame", box)
+	fill.Size = UDim2.new(1, -4, 1, -4)
+	fill.Position = UDim2.new(0, 2, 0, 2)
+	fill.BackgroundColor3 = THEME.success
+	fill.BorderSizePixel = 0
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(0, 2)
+
+	local label = Instance.new("TextLabel", cell)
+	label.Size = UDim2.new(1, -30, 1, 0)
+	label.Position = UDim2.new(0, 26, 0, 0)
+	label.BackgroundTransparency = 1
+	label.Text = itemName
+	label.TextColor3 = THEME.text
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 10
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextTruncate = Enum.TextTruncate.AtEnd
+
+	priorityItemCells[key] = {cell=cell, fill=fill, label=label}
+	cell.MouseButton1Click:Connect(function()
+		S.priorityItemEnabled[key] = S.priorityItemEnabled[key] == false
+		refreshPriorityItemUI()
+		GroundESP.refresh()
+		ObjectESP.refresh()
+	end)
+end
+
+refreshPriorityItemUI = function()
+	for key, cellData in pairs(priorityItemCells) do
+		local enabled = S.priorityItemEnabled[key] ~= false
+		cellData.fill.Visible = enabled
+		cellData.cell.BackgroundColor3 = enabled and THEME.cardHover or THEME.card
+		cellData.label.TextColor3 = enabled and THEME.text or THEME.textDim
+	end
+end
+refreshPriorityItemUI()
 
 addSection("Corpses ESP")
 UIControls.corpseEsp = addToggle("Enable", S.corpseEsp, function(on) GroundESP.setCorpses(on) end)
@@ -3796,6 +3912,7 @@ addButton("Reset Settings", THEME.danger, function()
 	S.highValueAlerts=false; S.highValueAlertMin=10000
 	S.objectEsp=false; S.objectAmmo=false; S.objectWeapons=false; S.objectMisc=false; S.objectTools=false
 	S.objectValuables=false; S.objectRubles=false
+	S.priorityItemEnabled={}; refreshPriorityItemUI()
 	S.freeCam=false; S.freeCamSpeed=50
 	S.dismissKey=Enum.KeyCode.Semicolon
 	S.baseFov=70; S.zoomFov=30; S.zoomKey=Enum.KeyCode.Z
