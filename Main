@@ -3255,12 +3255,12 @@ local Configs = (function()
 	end
 
 	local function SaveFile(name, str)
-		if writefile then
-			if makefolder and isfolder and not isfolder(CONFIG_DIR) then pcall(makefolder, CONFIG_DIR) end
+		if not writefile then return false end
+		local ok = pcall(function()
+			if makefolder and isfolder and not isfolder(CONFIG_DIR) then makefolder(CONFIG_DIR) end
 			writefile(configPath(name), str)
-			return true
-		end
-		return false
+		end)
+		return ok
 	end
 
 	local function LoadFile(name)
@@ -3478,13 +3478,15 @@ local Configs = (function()
 		return true
 	end
 
-	function self.overwriteAllWithDefaults()
-		local payload = HttpService:JSONEncode(self.collect())
-		local ok = true
-		for _, name in ipairs({"slot1", "slot2", "slot3", "default"}) do
-			ok = SaveFile(name, payload) and ok
+	function self.resetSlot(slot)
+		local name = "slot" .. tostring(slot)
+		-- Remove both formats first. This prevents a legacy .txt profile from
+		-- silently returning when a JSON file is reset or unavailable.
+		if delfile then
+			pcall(delfile, configPath(name))
+			pcall(delfile, tostring(name) .. ".txt")
 		end
-		return ok
+		return self.save(slot)
 	end
 
 	return self
@@ -3925,7 +3927,7 @@ for i = 1, 3 do
 	lbl.TextSize = 13; lbl.TextXAlignment = Enum.TextXAlignment.Left
 
 	local saveBtn = Instance.new("TextButton", row)
-	saveBtn.Size = UDim2.new(0, 70, 0, 26); saveBtn.Position = UDim2.new(1, -160, 0.5, -13)
+	saveBtn.Size = UDim2.new(0, 62, 0, 26); saveBtn.Position = UDim2.new(1, -152, 0.5, -13)
 	saveBtn.BackgroundColor3 = THEME.success
 	saveBtn.Text = "Save"; saveBtn.TextColor3 = Color3.new(1,1,1)
 	saveBtn.Font = Enum.Font.GothamBold; saveBtn.TextSize = 12
@@ -3933,44 +3935,46 @@ for i = 1, 3 do
 	Instance.new("UICorner", saveBtn).CornerRadius = UDim.new(0, 6)
 
 	local loadBtn = Instance.new("TextButton", row)
-	loadBtn.Size = UDim2.new(0, 70, 0, 26); loadBtn.Position = UDim2.new(1, -84, 0.5, -13)
+	loadBtn.Size = UDim2.new(0, 62, 0, 26); loadBtn.Position = UDim2.new(1, -84, 0.5, -13)
 	loadBtn.BackgroundColor3 = THEME.accent
 	loadBtn.Text = "Load"; loadBtn.TextColor3 = Color3.new(1,1,1)
 	loadBtn.Font = Enum.Font.GothamBold; loadBtn.TextSize = 12
 	loadBtn.BorderSizePixel = 0; loadBtn.AutoButtonColor = false
 	Instance.new("UICorner", loadBtn).CornerRadius = UDim.new(0, 6)
 
-	local idx = i
+	local resetBtn = Instance.new("TextButton", row)
+	resetBtn.Size = UDim2.new(0, 62, 0, 26); resetBtn.Position = UDim2.new(1, -220, 0.5, -13)
+	resetBtn.BackgroundColor3 = THEME.danger
+	resetBtn.Text = "Reset"; resetBtn.TextColor3 = Color3.new(1,1,1)
+	resetBtn.Font = Enum.Font.GothamBold; resetBtn.TextSize = 11
+	resetBtn.BorderSizePixel = 0; resetBtn.AutoButtonColor = false
+	Instance.new("UICorner", resetBtn).CornerRadius = UDim.new(0, 6)
+
+	local idx, resetToken = i, 0
 	saveBtn.MouseButton1Click:Connect(function() Configs.save(idx) end)
 	loadBtn.MouseButton1Click:Connect(function() Configs.load(idx) end)
+	resetBtn.MouseButton1Click:Connect(function()
+		if resetBtn.Text ~= "CONFIRM" then
+			resetToken = resetToken + 1
+			local token = resetToken
+			resetBtn.Text = "CONFIRM"
+			showConfigStatus("Reset Slot " .. idx .. "? It cannot be recovered. Press CONFIRM within 5 seconds.")
+			task.delay(5, function()
+				if resetToken == token and resetBtn.Parent then resetBtn.Text = "Reset" end
+			end)
+			return
+		end
+		resetToken = resetToken + 1
+		resetSettingsToDefaults()
+		local saved = Configs.resetSlot(idx)
+		showConfigStatus(saved and ("Slot " .. idx .. " reset to DEFAULT permanently") or ("Slot " .. idx .. " reset in session, but could not write file"))
+		resetBtn.Text = "Reset"
+	end)
 end
 
 addSection("Default Profile")
 addButton("Save Current as Default", THEME.success, function() Configs.saveDefault() end)
 addButton("Load Default", THEME.accent, function() Configs.loadDefault() end)
-
-addSection("Danger Zone")
-local resetLoadoutsButton
-local resetConfirmationToken = 0
-resetLoadoutsButton = addButton("Reset All Loadouts", THEME.danger, function()
-	if resetLoadoutsButton.Text ~= "CONFIRM: Erase All" then
-		resetConfirmationToken = resetConfirmationToken + 1
-		local token = resetConfirmationToken
-		resetLoadoutsButton.Text = "CONFIRM: Erase All"
-		task.delay(5, function()
-			if resetConfirmationToken == token and resetLoadoutsButton and resetLoadoutsButton.Parent then
-				resetLoadoutsButton.Text = "Reset All Loadouts"
-			end
-		end)
-		showConfigStatus("Press CONFIRM: Erase All within 5 seconds. This cannot be recovered.")
-		return
-	end
-	resetConfirmationToken = resetConfirmationToken + 1
-	resetSettingsToDefaults()
-	local saved = Configs.overwriteAllWithDefaults()
-	showConfigStatus(saved and "All loadouts reset to DEFAULT permanently" or "Settings reset, but default files could not be overwritten")
-	resetLoadoutsButton.Text = "Reset All Loadouts"
-end)
 
 local function destroyHub()
 	if hubDestroyed then return end
