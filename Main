@@ -2759,15 +2759,27 @@ local function addToggle(name, default, callback)
 
 	local enabled = false
 	local function setState(state, fire)
+		state = state == true
 		enabled = state
-		if state then
-			TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = THEME.accent}):Play()
-			TweenService:Create(ind, TweenInfo.new(0.15), {Position = UDim2.new(1, -18, 0, 2)}):Play()
-		else
-			TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(55,55,70)}):Play()
-			TweenService:Create(ind, TweenInfo.new(0.15), {Position = UDim2.new(0, 2, 0, 2)}):Play()
+		local onColor = THEME.accent
+		local offColor = Color3.fromRGB(55,55,70)
+		local onPosition = UDim2.new(1, -18, 0, 2)
+		local offPosition = UDim2.new(0, 2, 0, 2)
+		-- Profile loads must paint immediately; waiting on a Tween made visual
+		-- state look inconsistent even when S had loaded correctly.
+		if fire == false then
+			btn.BackgroundColor3 = state and onColor or offColor
+			ind.Position = state and onPosition or offPosition
+			return
 		end
-		if fire ~= false then callback(state) end
+		if state then
+			TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = onColor}):Play()
+			TweenService:Create(ind, TweenInfo.new(0.15), {Position = onPosition}):Play()
+		else
+			TweenService:Create(btn, TweenInfo.new(0.15), {BackgroundColor3 = offColor}):Play()
+			TweenService:Create(ind, TweenInfo.new(0.15), {Position = offPosition}):Play()
+		end
+		callback(state)
 	end
 	btn.MouseButton1Click:Connect(function() setState(not enabled) end)
 	if default then setState(true, false) end
@@ -3411,6 +3423,11 @@ local Configs = (function()
 		-- A profile restores settings, never an active scripted camera state.
 		Freecam.stop()
 		syncToggleControls()
+		-- Some executor UIs finish laying out tabs after the click callback; repeat
+		-- the paint on the next task so loaded values cannot leave stale visuals.
+		task.defer(function()
+			if not hubDestroyed then syncToggleControls() end
+		end)
 	end
 
 	function self.save(slot)
@@ -3459,6 +3476,15 @@ local Configs = (function()
 		self.apply(data)
 		showConfigStatus("Default configuration loaded")
 		return true
+	end
+
+	function self.overwriteAllWithDefaults()
+		local payload = HttpService:JSONEncode(self.collect())
+		local ok = true
+		for _, name in ipairs({"slot1", "slot2", "slot3", "default"}) do
+			ok = SaveFile(name, payload) and ok
+		end
+		return ok
 	end
 
 	return self
@@ -3879,6 +3905,7 @@ end)
 -- ============================================================
 createTab("Config")
 setTab("Config")
+local resetSettingsToDefaults
 
 addSection("Config Slots")
 
@@ -3922,6 +3949,29 @@ addSection("Default Profile")
 addButton("Save Current as Default", THEME.success, function() Configs.saveDefault() end)
 addButton("Load Default", THEME.accent, function() Configs.loadDefault() end)
 
+addSection("Danger Zone")
+local resetLoadoutsButton
+local resetConfirmationToken = 0
+resetLoadoutsButton = addButton("Reset All Loadouts", THEME.danger, function()
+	if resetLoadoutsButton.Text ~= "CONFIRM: Erase All" then
+		resetConfirmationToken = resetConfirmationToken + 1
+		local token = resetConfirmationToken
+		resetLoadoutsButton.Text = "CONFIRM: Erase All"
+		task.delay(5, function()
+			if resetConfirmationToken == token and resetLoadoutsButton and resetLoadoutsButton.Parent then
+				resetLoadoutsButton.Text = "Reset All Loadouts"
+			end
+		end)
+		showConfigStatus("Press CONFIRM: Erase All within 5 seconds. This cannot be recovered.")
+		return
+	end
+	resetConfirmationToken = resetConfirmationToken + 1
+	resetSettingsToDefaults()
+	local saved = Configs.overwriteAllWithDefaults()
+	showConfigStatus(saved and "All loadouts reset to DEFAULT permanently" or "Settings reset, but default files could not be overwritten")
+	resetLoadoutsButton.Text = "Reset All Loadouts"
+end)
+
 local function destroyHub()
 	if hubDestroyed then return end
 	hubDestroyed = true
@@ -3964,7 +4014,7 @@ end)
 addButton("Unload Hub", THEME.danger, destroyHub)
 
 addSection("Reset")
-addButton("Reset Settings", THEME.danger, function()
+resetSettingsToDefaults = function()
 	S.aimEnabled=false; S.aimMode="Lock"; S.aimPart="Head"; S.aimFov=90
 	S.aimSmoothing=0.3; S.aimPrediction=0; S.aimVisibleOnly=false; S.aimNPCs=false
 	S.weaponPrediction=true; S.weaponAntiRecoil=false; S.weaponRecoilStrength=1
@@ -4009,7 +4059,8 @@ addButton("Reset Settings", THEME.danger, function()
 	syncToggleControls()
 	showConfigStatus("Settings reset to defaults")
 	print("[Config] Reset")
-end)
+end
+addButton("Reset Settings", THEME.danger, resetSettingsToDefaults)
 
 -- ============================================================
 -- INPUT
