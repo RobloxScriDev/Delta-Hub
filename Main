@@ -700,9 +700,17 @@ local NPCEsp = (function()
 	function self.createSkeleton(model) createSkel(model) end
 	function self.createTracer(model) createTrc(model) end
 
+	local npcScanQueued = false
 	Workspace.DescendantAdded:Connect(function(desc)
-		-- Defer until the helper has registered models that arrive piece by piece.
-		task.defer(self.scan)
+		-- Descendant replication is noisy. Only rebuild NPC drawings when an NPC
+		-- ESP mode is actually enabled.
+		if (S.npcEspBox or S.npcEspSkeleton or S.npcEspTracer) and not npcScanQueued then
+			npcScanQueued = true
+			task.defer(function()
+				npcScanQueued = false
+				self.scan()
+			end)
+		end
 	end)
 
 	return self
@@ -1192,7 +1200,10 @@ local WeaponAssist = (function()
 		local h = math.rad(profile.horizontal * 0.0007 * S.weaponRecoilStrength)
 		Camera.CFrame = Camera.CFrame * CFrame.Angles(-v, (math.random() < 0.5 and h or -h), 0)
 	end
-	RunService.RenderStepped:Connect(function()
+	RunService.Heartbeat:Connect(function()
+		-- Do not inspect the whole weapon UI/model every frame while the feature
+		-- is unused. Ballistic data is only needed by prediction/recoil.
+		if not (S.weaponPrediction or S.weaponAntiRecoil) then return end
 		if os.clock() - lastRead > 0.5 then lastRead = os.clock(); refresh() end
 		local vm = H.getViewModel()
 		local sound = vm and (vm:FindFirstChild("FireSound", true) or vm:FindFirstChild("FireFarSound", true))
@@ -1917,6 +1928,7 @@ local GroundESP = (function()
 	local self = {}
 	local entries = {}
 	local lastScan, dirty = 0, true
+	local storageInventories, nextStorageInventoryRefresh = {}, 0
 
 	local function remove(entry)
 		local drawing = entries[entry]
@@ -1928,9 +1940,10 @@ local GroundESP = (function()
 
 	local function getPosition(entry)
 		if entry:IsA("BasePart") then return entry.Position end
-		if entry:IsA("Model") then return entry:GetPivot().Position end
 		local part = entry:FindFirstChildWhichIsA("BasePart", true)
-		return part and part.Position or nil
+		-- Empty or dismantled models retain a stale pivot. Never draw from one.
+		if not part then return nil end
+		return entry:IsA("Model") and entry:GetPivot().Position or part.Position
 	end
 
 	local function getGroundValue(entry)
@@ -1990,8 +2003,11 @@ local GroundESP = (function()
 	end
 
 	local function getContainerSummary(inventory)
-		local counts, total = {}, 0
-		for _, item in ipairs(inventory:GetChildren()) do
+		local counts, total, visited = {}, 0, {}
+		local function collect(current)
+			if visited[current] then return end
+			visited[current] = true
+			for _, item in ipairs(current:GetChildren()) do
 			local value = Inventory.getItemValue(item)
 			-- Include the exact tracked items even if this client has no price data.
 			if isTrackedLoot(item.Name) or (value > 0 and value >= S.groundMinValue) then
@@ -1999,7 +2015,11 @@ local GroundESP = (function()
 				counts[item.Name] = (counts[item.Name] or 0) + (type(amount) == "number" and amount or 1)
 				total = total + value
 			end
+				local nested = item:FindFirstChild("Inventory")
+				if nested and (nested:IsA("Folder") or nested:IsA("Configuration")) then collect(nested) end
+			end
 		end
+		collect(inventory)
 		local names = {}
 		for name, amount in pairs(counts) do
 			table.insert(names, amount > 1 and (name .. " ×" .. amount) or name)
@@ -2010,6 +2030,33 @@ local GroundESP = (function()
 		for i = 1, math.min(#names, 4) do table.insert(shown, names[i]) end
 		if #names > 4 then table.insert(shown, "+" .. (#names - 4) .. " more") end
 		return table.concat(shown, ", "), total
+	end
+
+	local function isNestedInventory(inventory)
+		local node = inventory.Parent
+		while node and node ~= Workspace do
+			if (node:IsA("Folder") or node:IsA("Configuration")) and string.lower(node.Name) == "inventory" then
+				return true
+			end
+			node = node.Parent
+		end
+		return false
+	end
+
+	local function getStorageInventories()
+		local now = os.clock()
+		if now < nextStorageInventoryRefresh then return storageInventories end
+		nextStorageInventoryRefresh = now + 5
+		storageInventories = {}
+		local storageRoot = Workspace:FindFirstChild("Containers")
+		if not storageRoot then return storageInventories end
+		for _, node in ipairs(storageRoot:GetDescendants()) do
+			if (node:IsA("Folder") or node:IsA("Configuration"))
+				and string.lower(node.Name) == "inventory" and not isNestedInventory(node) then
+				table.insert(storageInventories, node)
+			end
+		end
+		return storageInventories
 	end
 
 	local function scan()
@@ -2043,9 +2090,10 @@ local GroundESP = (function()
 			end
 		end
 		if S.groundItemEsp then
-			for _, inventory in ipairs(Workspace:GetDescendants()) do
-				if (inventory:IsA("Folder") or inventory:IsA("Configuration"))
-					and string.lower(inventory.Name) == "inventory" then
+			-- All map storage in this experience lives below Workspace.Containers.
+			-- Avoid walking NPC zones and the entire map every refresh.
+			for _, inventory in ipairs(getStorageInventories()) do
+				if inventory.Parent then
 					local container = getContainerRoot(inventory)
 					local summary, value = container and getContainerSummary(inventory)
 					if container and summary and getPosition(container) then
@@ -2139,6 +2187,7 @@ end)()
 local ObjectESP = (function()
 	local self = {}
 	local drawings, lastScan = {}, 0
+	local SCAN_INTERVAL = 3
 	local keywords = {
 		{"medical", {"medkit", "bandage", "dressing", "ifak", "serum", "morphine"}},
 		{"armor", {"helmet", "armor", "vest", "chest", "rig", "pads", "mask"}},
@@ -2169,9 +2218,9 @@ local ObjectESP = (function()
 
 	local function getPosition(instance)
 		if instance:IsA("BasePart") then return instance.Position end
-		if instance:IsA("Model") then return instance:GetPivot().Position end
 		local part = instance:FindFirstChildWhichIsA("BasePart", true)
-		return part and part.Position or nil
+		if not part then return nil end
+		return instance:IsA("Model") and instance:GetPivot().Position or part.Position
 	end
 
 	local function isEnabled(category)
@@ -2186,18 +2235,24 @@ local ObjectESP = (function()
 	end
 
 	local function scan()
-		if not (S.objectEsp or S.objectRubles) then
+		local anyCategory = S.objectAmmo or S.objectWeapons or S.objectMisc or S.objectTools
+			or S.objectMedical or S.objectArmor or S.objectFood or S.objectKeys or S.objectAttachments
+		if not (S.objectRubles or (S.objectEsp and anyCategory)) then
 			for instance in pairs(drawings) do remove(instance) end
 			return
 		end
 		local found = {}
+		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		for _, instance in ipairs(Workspace:GetDescendants()) do
 			if instance:IsA("Model") or instance:IsA("Tool") or instance:IsA("BasePart") then
 				-- A model is labeled once instead of once for every internal part.
 				local parentModel = instance:FindFirstAncestorOfClass("Model")
 				if not (instance:IsA("BasePart") and parentModel) then
 					local category = categoryFor(instance)
-					if category and isEnabled(category) and getPosition(instance) then
+					local position = getPosition(instance)
+					local inRange = position and (not myRoot or S.objectEspDistance <= 0
+						or (myRoot.Position - position).Magnitude * 0.28 <= S.objectEspDistance)
+					if category and isEnabled(category) and inRange then
 						found[instance] = category
 						if not drawings[instance] then
 							local text = Drawing.new("Text")
@@ -2214,7 +2269,7 @@ local ObjectESP = (function()
 	end
 
 	RunService.RenderStepped:Connect(function()
-		if os.clock() - lastScan >= 1 then lastScan = os.clock(); scan() end
+		if os.clock() - lastScan >= SCAN_INTERVAL then lastScan = os.clock(); scan() end
 		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		for instance, text in pairs(drawings) do
 			local pos = instance.Parent and getPosition(instance)
@@ -2266,9 +2321,9 @@ local WorldSearch = (function()
 
 	local function getPosition(instance)
 		if instance:IsA("BasePart") then return instance.Position end
-		if instance:IsA("Model") then return instance:GetPivot().Position end
 		local part = instance:FindFirstChildWhichIsA("BasePart", true)
-		return part and part.Position or nil
+		if not part then return nil end
+		return instance:IsA("Model") and instance:GetPivot().Position or part.Position
 	end
 
 	local function matchesName(name, displayName, query)
@@ -3362,13 +3417,9 @@ local Configs = (function()
 		local name = "slot" .. tostring(slot)
 		local data = self.collect()
 		local ok = SaveFile(name, HttpService:JSONEncode(data))
-		local remote = ReplicatedStorage:FindFirstChild("LirpConfigRemote")
-		if remote then
-			pcall(function() remote:InvokeServer("save", name, data) end)
-		end
-		print("[Config] SAVE slot" .. slot .. (ok and " (file)" or ""))
-		showConfigStatus("Settings saved to Slot " .. slot)
-		return true
+		print("[Config] SAVE slot" .. slot .. (ok and " (local file)" or " failed"))
+		showConfigStatus(ok and ("Settings saved locally to Slot " .. slot) or "Could not save Slot " .. slot)
+		return ok
 	end
 
 	function self.load(slot)
@@ -3378,13 +3429,6 @@ local Configs = (function()
 		if raw then
 			local ok, dec = pcall(function() return HttpService:JSONDecode(raw) end)
 			if ok and type(dec) == "table" then data = dec end
-		end
-		if not data then
-			local remote = ReplicatedStorage:FindFirstChild("LirpConfigRemote")
-			if remote then
-				local ok, result = pcall(function() return remote:InvokeServer("load", name) end)
-				if ok and type(result) == "table" then data = result end
-			end
 		end
 		if not data then
 			warn("[Config] slot" .. slot .. " empty")
@@ -3400,8 +3444,6 @@ local Configs = (function()
 	function self.saveDefault()
 		local data = self.collect()
 		local ok = SaveFile("default", HttpService:JSONEncode(data))
-		local remote = ReplicatedStorage:FindFirstChild("LirpConfigRemote")
-		if remote then pcall(function() remote:InvokeServer("save", "default", data) end) end
 		showConfigStatus(ok and "Default configuration saved" or "Could not save default configuration")
 		return ok
 	end
@@ -3412,13 +3454,6 @@ local Configs = (function()
 		if raw then
 			local ok, decoded = pcall(function() return HttpService:JSONDecode(raw) end)
 			if ok and type(decoded) == "table" then data = decoded end
-		end
-		if not data then
-			local remote = ReplicatedStorage:FindFirstChild("LirpConfigRemote")
-			if remote then
-				local ok, result = pcall(function() return remote:InvokeServer("load", "default") end)
-				if ok and type(result) == "table" then data = result end
-			end
 		end
 		if not data then showConfigStatus("Default configuration is empty"); return false end
 		self.apply(data)
@@ -3898,6 +3933,7 @@ local function destroyHub()
 	Footsteps.setEnabled(false)
 	GroundESP.setGroundItems(false); GroundESP.setCorpses(false)
 	ObjectESP.setEnabled(false)
+	ObjectESP.setCategory("currency", false)
 	WorldSearch.clearFocus()
 	Freecam.stop()
 	if freecamOverlay then freecamOverlay:Destroy() end
