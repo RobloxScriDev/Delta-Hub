@@ -3908,6 +3908,47 @@ end)
 createTab("Config")
 setTab("Config")
 local resetSettingsToDefaults
+local function showSlotResetConfirmation(slot)
+	local old = gui:FindFirstChild("SlotResetConfirmation")
+	if old then old:Destroy() end
+	local modal = Instance.new("Frame", gui)
+	modal.Name = "SlotResetConfirmation"
+	modal.Size = UDim2.new(0, 350, 0, 170)
+	modal.Position = UDim2.new(0.5, -175, 0.5, -85)
+	modal.BackgroundColor3 = THEME.panel
+	modal.BorderSizePixel = 0
+	modal.ZIndex = 500
+	Instance.new("UICorner", modal).CornerRadius = UDim.new(0, 10)
+	local stroke = Instance.new("UIStroke", modal)
+	stroke.Color = THEME.danger; stroke.Thickness = 1
+	local message = Instance.new("TextLabel", modal)
+	message.Size = UDim2.new(1, -28, 0, 88)
+	message.Position = UDim2.new(0, 14, 0, 12)
+	message.BackgroundTransparency = 1
+	message.Text = "Reset Slot " .. slot .. " to DEFAULT?\n\nIts saved loadout cannot be recovered."
+	message.TextColor3 = THEME.text
+	message.Font = Enum.Font.GothamMedium
+	message.TextSize = 14
+	message.TextWrapped = true
+	message.ZIndex = 501
+	local cancel = Instance.new("TextButton", modal)
+	cancel.Size = UDim2.new(0.5, -21, 0, 34); cancel.Position = UDim2.new(0, 14, 1, -48)
+	cancel.BackgroundColor3 = THEME.card; cancel.Text = "Cancel"; cancel.TextColor3 = THEME.text
+	cancel.Font = Enum.Font.GothamBold; cancel.TextSize = 12; cancel.BorderSizePixel = 0; cancel.ZIndex = 501
+	Instance.new("UICorner", cancel).CornerRadius = UDim.new(0, 6)
+	cancel.MouseButton1Click:Connect(function() modal:Destroy() end)
+	local confirm = Instance.new("TextButton", modal)
+	confirm.Size = UDim2.new(0.5, -21, 0, 34); confirm.Position = UDim2.new(0.5, 7, 1, -48)
+	confirm.BackgroundColor3 = THEME.danger; confirm.Text = "YES, RESET SLOT"; confirm.TextColor3 = Color3.new(1,1,1)
+	confirm.Font = Enum.Font.GothamBold; confirm.TextSize = 11; confirm.BorderSizePixel = 0; confirm.ZIndex = 501
+	Instance.new("UICorner", confirm).CornerRadius = UDim.new(0, 6)
+	confirm.MouseButton1Click:Connect(function()
+		modal:Destroy()
+		resetSettingsToDefaults()
+		local saved = Configs.resetSlot(slot)
+		showConfigStatus(saved and ("Slot " .. slot .. " reset to DEFAULT permanently") or ("Slot " .. slot .. " reset in session, but could not write file"))
+	end)
+end
 
 addSection("Config Slots")
 
@@ -3950,26 +3991,10 @@ for i = 1, 3 do
 	resetBtn.BorderSizePixel = 0; resetBtn.AutoButtonColor = false
 	Instance.new("UICorner", resetBtn).CornerRadius = UDim.new(0, 6)
 
-	local idx, resetToken = i, 0
+	local idx = i
 	saveBtn.MouseButton1Click:Connect(function() Configs.save(idx) end)
 	loadBtn.MouseButton1Click:Connect(function() Configs.load(idx) end)
-	resetBtn.MouseButton1Click:Connect(function()
-		if resetBtn.Text ~= "CONFIRM" then
-			resetToken = resetToken + 1
-			local token = resetToken
-			resetBtn.Text = "CONFIRM"
-			showConfigStatus("Reset Slot " .. idx .. "? It cannot be recovered. Press CONFIRM within 5 seconds.")
-			task.delay(5, function()
-				if resetToken == token and resetBtn.Parent then resetBtn.Text = "Reset" end
-			end)
-			return
-		end
-		resetToken = resetToken + 1
-		resetSettingsToDefaults()
-		local saved = Configs.resetSlot(idx)
-		showConfigStatus(saved and ("Slot " .. idx .. " reset to DEFAULT permanently") or ("Slot " .. idx .. " reset in session, but could not write file"))
-		resetBtn.Text = "Reset"
-	end)
+	resetBtn.MouseButton1Click:Connect(function() showSlotResetConfirmation(idx) end)
 end
 
 addSection("Default Profile")
