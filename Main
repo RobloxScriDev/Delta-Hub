@@ -12,6 +12,17 @@ local Shared      = (getgenv and getgenv()) or _G
 
 if Shared.DeltaHubCleanup then pcall(Shared.DeltaHubCleanup) end
 Shared.DeltaHubCleanup = nil
+-- Drawings are not Instances and do not live in PlayerGui. Keep a global
+-- registry so a rerun can always remove labels left by a previous hub run.
+if Shared.DeltaDrawingRegistry then
+	for _, drawing in ipairs(Shared.DeltaDrawingRegistry) do pcall(function() drawing:Remove() end) end
+end
+Shared.DeltaDrawingRegistry = {}
+local function newDrawing(kind)
+	local drawing = Drawing.new(kind)
+	table.insert(Shared.DeltaDrawingRegistry, drawing)
+	return drawing
+end
 
 local Inventory
 
@@ -252,21 +263,21 @@ local ESP = (function()
 
 	local function createESP(plr)
 		local ds = {}
-		ds.box = Drawing.new("Square")
+		ds.box = newDrawing("Square")
 		ds.box.Visible = false; ds.box.Color = C.ESP; ds.box.Thickness = 2; ds.box.Filled = false
-		ds.nameTag = Drawing.new("Text")
+		ds.nameTag = newDrawing("Text")
 		ds.nameTag.Visible = false; ds.nameTag.Color = Color3.new(1,1,1); ds.nameTag.Size = 14
 		ds.nameTag.Center = true; ds.nameTag.Outline = true; ds.nameTag.OutlineColor = Color3.new(0,0,0)
-		ds.distTag = Drawing.new("Text")
+		ds.distTag = newDrawing("Text")
 		ds.distTag.Visible = false; ds.distTag.Color = Color3.fromRGB(100,180,255); ds.distTag.Size = 13
 		ds.distTag.Center = true; ds.distTag.Outline = true; ds.distTag.OutlineColor = Color3.new(0,0,0)
-		ds.heldItemTag = Drawing.new("Text")
+		ds.heldItemTag = newDrawing("Text")
 		ds.heldItemTag.Visible = false; ds.heldItemTag.Color = Color3.fromRGB(255, 220, 120); ds.heldItemTag.Size = 13
 		ds.heldItemTag.Center = true; ds.heldItemTag.Outline = true; ds.heldItemTag.OutlineColor = Color3.new(0,0,0)
-		ds.aimingTag = Drawing.new("Text")
+		ds.aimingTag = newDrawing("Text")
 		ds.aimingTag.Visible = false; ds.aimingTag.Color = Color3.fromRGB(255, 110, 110); ds.aimingTag.Size = 13
 		ds.aimingTag.Center = true; ds.aimingTag.Outline = true; ds.aimingTag.OutlineColor = Color3.new(0,0,0)
-		ds.healthBar = Drawing.new("Line")
+		ds.healthBar = newDrawing("Line")
 		ds.healthBar.Visible = false; ds.healthBar.Thickness = 2
 		drawings[plr] = ds
 	end
@@ -274,7 +285,7 @@ local ESP = (function()
 	local function createSkel(plr)
 		local lines = {}
 		for _ = 1, 14 do
-			local line = Drawing.new("Line")
+			local line = newDrawing("Line")
 			line.Visible = false; line.Color = C.SKELETON; line.Thickness = 1.5
 			table.insert(lines, line)
 		end
@@ -282,7 +293,7 @@ local ESP = (function()
 	end
 
 	local function createTrc(plr)
-		local line = Drawing.new("Line")
+		local line = newDrawing("Line")
 		line.Visible = false; line.Color = C.TRACER; line.Thickness = 1.5
 		tracerDrawings[plr] = line
 	end
@@ -514,15 +525,15 @@ local NPCEsp = (function()
 	local function createESP(model)
 		if npcDrawings[model] then return end
 		local ds = {}
-		ds.box = Drawing.new("Square")
+		ds.box = newDrawing("Square")
 		ds.box.Visible = false; ds.box.Color = C.NPC_ESP; ds.box.Thickness = 2; ds.box.Filled = false
-		ds.nameTag = Drawing.new("Text")
+		ds.nameTag = newDrawing("Text")
 		ds.nameTag.Visible = false; ds.nameTag.Color = Color3.new(1,1,1); ds.nameTag.Size = 14
 		ds.nameTag.Center = true; ds.nameTag.Outline = true; ds.nameTag.OutlineColor = Color3.new(0,0,0)
-		ds.distTag = Drawing.new("Text")
+		ds.distTag = newDrawing("Text")
 		ds.distTag.Visible = false; ds.distTag.Color = Color3.fromRGB(100,180,255); ds.distTag.Size = 13
 		ds.distTag.Center = true; ds.distTag.Outline = true; ds.distTag.OutlineColor = Color3.new(0,0,0)
-		ds.healthBar = Drawing.new("Line")
+		ds.healthBar = newDrawing("Line")
 		ds.healthBar.Visible = false; ds.healthBar.Thickness = 2
 		npcDrawings[model] = ds
 	end
@@ -531,7 +542,7 @@ local NPCEsp = (function()
 		if npcSkelDrawings[model] then return end
 		local lines = {}
 		for _ = 1, 14 do
-			local line = Drawing.new("Line")
+			local line = newDrawing("Line")
 			line.Visible = false; line.Color = C.NPC_SKELETON; line.Thickness = 1.5
 			table.insert(lines, line)
 		end
@@ -540,7 +551,7 @@ local NPCEsp = (function()
 
 	local function createTrc(model)
 		if npcTrcDrawings[model] then return end
-		local line = Drawing.new("Line")
+		local line = newDrawing("Line")
 		line.Visible = false; line.Color = C.NPC_TRACER; line.Thickness = 1.5
 		npcTrcDrawings[model] = line
 	end
@@ -794,7 +805,7 @@ local Footsteps = (function()
 	end
 
 	local function addFootstep(position)
-		local circle = Drawing.new("Circle")
+		local circle = newDrawing("Circle")
 		circle.Position     = Camera:WorldToViewportPoint(position)
 		circle.Radius       = S.footstepSize
 		circle.Color        = C.FOOTSTEP
@@ -1223,7 +1234,7 @@ local Aimbot = (function()
 	local self = {}
 	local heartbeat = nil
 
-	local fovCircle = Drawing.new("Circle")
+	local fovCircle = newDrawing("Circle")
 	fovCircle.Visible = false
 	fovCircle.Color = C.AIM_FOV
 	fovCircle.Thickness = 1.5
@@ -1957,7 +1968,7 @@ local GroundESP = (function()
 	end
 
 	local function add(entry, kind, name, value)
-		local text = Drawing.new("Text")
+		local text = newDrawing("Text")
 		text.Visible = false
 		text.Center = true
 		text.Outline = true
@@ -2207,12 +2218,22 @@ local ObjectESP = (function()
 	local function categoryFor(instance)
 		local exactName = string.lower(instance.Name)
 		if exactName == "rubles" then return "currency" end
+		-- Map architecture frequently contains names such as "safe", "tool" and
+		-- "bag". Only classify actual replicated loot, never scenery models.
+		local dropped = Workspace:FindFirstChild("DroppedItems")
+		local itemLike = instance:IsA("Tool")
+			or instance:GetAttribute("ItemType") ~= nil
+			or instance:GetAttribute("DisplayName") ~= nil
+			or instance:GetAttribute("Amount") ~= nil
+			or instance:GetAttribute("Slot") ~= nil
+			or (dropped and instance:IsDescendantOf(dropped))
+		if not itemLike then return nil end
 		local text = string.lower(instance.Name .. " " .. tostring(instance:GetAttribute("DisplayName") or "") .. " " .. tostring(instance:GetAttribute("ItemType") or ""))
 		for _, rule in ipairs(keywords) do
 			local category, words = rule[1], rule[2]
 			for _, word in ipairs(words) do if string.find(text, word, 1, true) then return category end end
 		end
-		if instance:IsA("Tool") or instance:GetAttribute("ItemType") or instance:GetAttribute("DisplayName") then return "misc" end
+		if itemLike then return "misc" end
 		return nil
 	end
 
@@ -2255,7 +2276,7 @@ local ObjectESP = (function()
 					if category and isEnabled(category) and inRange then
 						found[instance] = category
 						if not drawings[instance] then
-							local text = Drawing.new("Text")
+							local text = newDrawing("Text")
 							text.Visible = false; text.Center = true; text.Outline = true
 							text.OutlineColor = Color3.new(0, 0, 0); text.Size = 13
 							drawings[instance] = text
@@ -2450,7 +2471,7 @@ local WorldSearch = (function()
 		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
 		highlight.Parent = adornee
 		activeHighlight = highlight
-		local drawing = Drawing.new(mode == "Tracer" and "Line" or "Text")
+		local drawing = newDrawing(mode == "Tracer" and "Line" or "Text")
 		drawing.Visible = false
 		drawing.Color = Color3.fromRGB(195, 90, 255)
 		drawing.Thickness = 2
@@ -3486,7 +3507,15 @@ local Configs = (function()
 			pcall(delfile, configPath(name))
 			pcall(delfile, tostring(name) .. ".txt")
 		end
-		return self.save(slot)
+		if not self.save(slot) then return false end
+		-- Verify the exact local source used by LoadFile, not merely the current
+		-- session state. A failed write must never look like a successful reset.
+		local raw = LoadFile(name)
+		if not raw then return false end
+		local ok, saved = pcall(function() return HttpService:JSONDecode(raw) end)
+		return ok and type(saved) == "table"
+			and saved.aimEnabled == false and saved.espBox == false
+			and saved.groundItemEsp == false and saved.objectEsp == false
 	end
 
 	return self
@@ -4004,6 +4033,8 @@ addButton("Load Default", THEME.accent, function() Configs.loadDefault() end)
 local function destroyHub()
 	if hubDestroyed then return end
 	hubDestroyed = true
+	for _, drawing in ipairs(Shared.DeltaDrawingRegistry or {}) do pcall(function() drawing:Remove() end) end
+	Shared.DeltaDrawingRegistry = {}
 	isHolding = false; isHoldingInv = false
 	Aimbot.destroy()
 	ESP.stopESP(); ESP.stopSkeleton(); ESP.stopTracer()
