@@ -2166,13 +2166,14 @@ local GroundESP = (function()
 		if dirty or os.clock() - lastScan >= 1.25 then lastScan = os.clock(); scan() end
 		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		for entry, data in pairs(entries) do
-			local pos = entry.Parent and getPosition(entry)
-			if not pos then
-				remove(entry)
-			else
+			-- Fail closed: a bad/deleted entry must never retain its previous
+			-- screen position as a burned-in label.
+			data.text.Visible = false
+			local ok = pcall(function()
+				local pos = entry.Parent and getPosition(entry)
+				if not pos then remove(entry); return end
 				local point, onScreen = Camera:WorldToViewportPoint(pos)
 				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
-				data.text.Visible = onScreen and point.Z > 0
 				data.text.Position = Vector2.new(point.X, point.Y)
 				data.text.Color = data.kind == "corpse" and C.CORPSE or (data.kind == "container" and C.CONTAINER or C.GROUND_ITEM)
 				if data.kind == "container" then
@@ -2182,7 +2183,9 @@ local GroundESP = (function()
 				else
 					data.text.Text = string.format("%s | $%d | %dm", data.name, math.floor(data.value), distance)
 				end
-			end
+				data.text.Visible = onScreen and point.Z > 0
+			end)
+			if not ok then remove(entry) end
 		end
 	end)
 
@@ -2293,21 +2296,22 @@ local ObjectESP = (function()
 		if os.clock() - lastScan >= SCAN_INTERVAL then lastScan = os.clock(); scan() end
 		local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 		for instance, text in pairs(drawings) do
-			local pos = instance.Parent and getPosition(instance)
-			if not pos then remove(instance) else
+			text.Visible = false
+			local ok = pcall(function()
+				local pos = instance.Parent and getPosition(instance)
+				if not pos then remove(instance); return end
 				local point, onScreen = Camera:WorldToViewportPoint(pos)
-				text.Visible = onScreen and point.Z > 0
 				local distance = myRoot and math.floor((myRoot.Position - pos).Magnitude * 0.28) or 0
+				if not (onScreen and point.Z > 0 and (S.objectEspDistance <= 0 or distance <= S.objectEspDistance)) then return end
 				local priority = categoryFor(instance)
-				text.Visible = onScreen and point.Z > 0 and (S.objectEspDistance <= 0 or distance <= S.objectEspDistance)
-				if text.Visible then
-					text.Position = Vector2.new(point.X, point.Y)
-					text.Color = priority == "currency" and C.GROUND_ITEM or Color3.fromRGB(80, 190, 255)
-					local amount = instance:GetAttribute("Amount")
-					local suffix = priority == "currency" and type(amount) == "number" and (" ×" .. math.floor(amount)) or ""
-					text.Text = string.format("%s%s | %dm", instance.Name, suffix, distance)
-				end
-			end
+				text.Position = Vector2.new(point.X, point.Y)
+				text.Color = priority == "currency" and C.GROUND_ITEM or Color3.fromRGB(80, 190, 255)
+				local amount = instance:GetAttribute("Amount")
+				local suffix = priority == "currency" and type(amount) == "number" and (" ×" .. math.floor(amount)) or ""
+				text.Text = string.format("%s%s | %dm", instance.Name, suffix, distance)
+				text.Visible = true
+			end)
+			if not ok then remove(instance) end
 		end
 	end)
 
@@ -2439,20 +2443,27 @@ local WorldSearch = (function()
 	end
 
 	RunService.RenderStepped:Connect(function()
-		if not activeMarker or not activeMarker.instance or not activeMarker.instance.Parent then return end
-		local position = getPosition(activeMarker.instance)
-		if not position then clearMarker(); return end
-		local point, onScreen = Camera:WorldToViewportPoint(position)
+		if not activeMarker then return end
+		if not activeMarker.instance or not activeMarker.instance.Parent then
+			clearMarker()
+			return
+		end
 		local drawing = activeMarker.drawing
-		drawing.Visible = onScreen and point.Z > 0
-		if drawing.Visible then
+		drawing.Visible = false
+		local ok = pcall(function()
+			local position = getPosition(activeMarker.instance)
+			if not position then clearMarker(); return end
+			local point, onScreen = Camera:WorldToViewportPoint(position)
+			if not (onScreen and point.Z > 0) then return end
 			if activeMarker.mode == "Tracer" then
 				drawing.From = Vector2.new(Camera.ViewportSize.X * 0.5, Camera.ViewportSize.Y - 8)
 				drawing.To = Vector2.new(point.X, point.Y)
 			else
 				drawing.Position = Vector2.new(point.X, point.Y)
 			end
-		end
+			drawing.Visible = true
+		end)
+		if not ok then clearMarker() end
 	end)
 
 	function self.focus(instance, mode)
